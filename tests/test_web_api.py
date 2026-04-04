@@ -62,11 +62,20 @@ def test_summary_endpoint_from_folder(summary_export_dir: Path) -> None:
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["zip_count"] == 0
+    assert payload["folder_count"] == 1
     assert payload["metadata_records"] == 4
     assert payload["total_media"] == 4
     assert payload["image_count"] == 2
     assert payload["video_count"] == 2
+    assert payload["scan_complete"] is True
+    assert payload["scan_ready"] is False
+    assert payload["found_media_files"] == 0
+    assert payload["matched_media_files"] == 0
+    assert payload["missing_media_files"] == 4
+    assert payload["orphan_media_files"] == 0
     assert len(payload["errors"]) == 1
+    assert payload["warnings"] == []
 
 
 def test_summary_endpoint_from_zip(summary_export_zip: Path) -> None:
@@ -76,11 +85,37 @@ def test_summary_endpoint_from_zip(summary_export_zip: Path) -> None:
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["zip_count"] == 1
+    assert payload["folder_count"] == 0
     assert payload["metadata_records"] == 4
     assert payload["total_media"] == 4
     assert payload["image_count"] == 2
     assert payload["video_count"] == 2
+    assert payload["scan_complete"] is True
+    assert payload["scan_ready"] is False
+    assert payload["found_media_files"] == 0
+    assert payload["matched_media_files"] == 0
+    assert payload["missing_media_files"] == 4
+    assert payload["orphan_media_files"] == 0
     assert len(payload["errors"]) == 1
+    assert payload["warnings"] == []
+
+
+def test_summary_endpoint_blocks_start_when_scan_has_missing_and_orphan_files(
+    reconciliation_issue_export_dir: Path,
+) -> None:
+    client = TestClient(create_app(LauncherState(port=8765)))
+
+    response = client.post("/api/analysis/summary", json={"sources": [str(reconciliation_issue_export_dir)]})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scan_complete"] is True
+    assert payload["scan_ready"] is False
+    assert payload["matched_media_files"] == 1
+    assert payload["missing_media_files"] == 1
+    assert payload["orphan_media_files"] == 1
+    assert payload["errors"] == []
 
 
 def test_job_lifecycle_and_event_endpoint(sample_export_dir: Path, tmp_path: Path) -> None:

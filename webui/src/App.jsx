@@ -1,11 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const initialSummary = {
+  zip_count: 0,
+  folder_count: 0,
   metadata_records: 0,
   total_media: 0,
   image_count: 0,
   video_count: 0,
+  scan_complete: false,
+  scan_ready: false,
+  found_media_files: 0,
+  matched_media_files: 0,
+  missing_media_files: 0,
+  orphan_media_files: 0,
   errors: [],
+  warnings: [],
 };
 
 const initialStats = {
@@ -17,20 +26,6 @@ const initialStats = {
   error_count: 0,
   errors: [],
 };
-
-function countSourceTypes(sources) {
-  return sources.reduce(
-    (accumulator, source) => {
-      if (source.toLowerCase().endsWith(".zip")) {
-        accumulator.zipCount += 1;
-      } else {
-        accumulator.folderCount += 1;
-      }
-      return accumulator;
-    },
-    { zipCount: 0, folderCount: 0 },
-  );
-}
 
 function dedupePaths(currentPaths, incomingPaths) {
   const known = new Set(currentPaths);
@@ -78,8 +73,6 @@ function App() {
   const [isSelecting, setIsSelecting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const eventSourceRef = useRef(null);
-
-  const summary = useMemo(() => countSourceTypes(sources), [sources]);
 
   const loadAppState = async () => {
     const payload = await readJson("/api/app-state");
@@ -285,8 +278,39 @@ function App() {
   };
 
   const running = jobStatus === "running";
-  const readyToStart = sources.length > 0 && outputDir.trim().length > 0 && !running && !isSubmitting;
   const summaryErrors = summaryData.errors ?? [];
+  const summaryWarnings = summaryData.warnings ?? [];
+  const readyToStart =
+    sources.length > 0 &&
+    outputDir.trim().length > 0 &&
+    !running &&
+    !isSubmitting &&
+    !isAnalyzing &&
+    summaryData.scan_ready;
+  const scanStatusLabel =
+    isAnalyzing
+      ? "Scanning..."
+      : summaryData.scan_ready
+        ? "Ready to process"
+        : sources.length === 0
+          ? "Add inputs to scan"
+          : "Blocked: scan issues found";
+  const startBlockedReason =
+    sources.length === 0
+      ? "Add at least one ZIP file or folder."
+      : isAnalyzing
+        ? "Waiting for scan to finish."
+        : outputDir.trim().length === 0
+          ? "Choose an output folder."
+          : summaryErrors[0]
+            ? summaryErrors[0]
+            : summaryData.missing_media_files > 0
+              ? `${summaryData.missing_media_files} media files from JSON were not found.`
+              : summaryData.orphan_media_files > 0
+                ? `${summaryData.orphan_media_files} files were found without matching JSON records.`
+                : !summaryData.scan_ready
+                  ? "Summary scan has not passed yet."
+                  : "";
   const statusLabel =
     jobStatus === "running"
       ? "Processing"
@@ -325,16 +349,16 @@ function App() {
           <h2>Summary</h2>
           <div className="metric-tile">
             <strong>{summaryData.total_media}</strong>
-            <span>{isAnalyzing ? "Analyzing JSON..." : "Total media from JSON"}</span>
+            <span>{scanStatusLabel}</span>
           </div>
           <div className="metric-list">
             <div>
               <span>ZIP files</span>
-              <strong>{summary.zipCount}</strong>
+              <strong>{summaryData.zip_count}</strong>
             </div>
             <div>
               <span>Folders</span>
-              <strong>{summary.folderCount}</strong>
+              <strong>{summaryData.folder_count}</strong>
             </div>
             <div>
               <span>Images</span>
@@ -353,11 +377,22 @@ function App() {
             <h3>Last processing result</h3>
             <p>Merged: {stats.merged_files}</p>
             <p>Tagged: {stats.tagged_files}</p>
-              <p>Errors: {stats.error_count}</p>
+            <p>Errors: {stats.error_count}</p>
+          </div>
+          <div className="info-card">
+            <h3>Scan checks</h3>
+            <p>Matched media: {summaryData.matched_media_files}</p>
+            <p>Missing media: {summaryData.missing_media_files}</p>
+            <p>Orphan files: {summaryData.orphan_media_files}</p>
           </div>
           {summaryErrors.length > 0 ? (
             <div className="alert-inline">
-              Summary warnings: {summaryErrors[0]}
+              Summary error: {summaryErrors[0]}
+            </div>
+          ) : null}
+          {!summaryErrors.length && summaryWarnings.length > 0 ? (
+            <div className="alert-inline">
+              Summary warning: {summaryWarnings[0]}
             </div>
           ) : null}
           <div className="footnote">
@@ -384,6 +419,11 @@ function App() {
               {running || isSubmitting ? "Processing..." : "Start processing"}
             </button>
           </div>
+          {!readyToStart ? (
+            <div className="alert-inline">
+              {startBlockedReason}
+            </div>
+          ) : null}
 
           <div className="action-row">
             <button className="secondary-button" type="button" onClick={handleSelectZips} disabled={isSelecting || running}>

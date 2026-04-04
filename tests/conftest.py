@@ -27,6 +27,8 @@ def _write_export_fixture(root: Path) -> Path:
         {
             "Date": "2024-01-02 03:04:05 UTC",
             "Media Id": SAMPLE_MID,
+            "Media Download Url": f"https://example.com/{SAMPLE_MID}-main.jpg",
+            "Media Type": "Image",
             "Latitude": 52.52,
             "Longitude": 13.405,
         }
@@ -110,9 +112,47 @@ def _write_video_export_fixture(root: Path) -> Path:
         {
             "Date": "2024-03-04 05:06:07 UTC",
             "Media Id": VIDEO_ONE_MID,
+            "Media Download Url": f"https://example.com/{VIDEO_ONE_MID}.mp4",
+            "Media Type": "Video",
             "Latitude": 52.52,
             "Longitude": 13.405,
         }
+    ]
+    (export_dir / "metadata.json").write_text(json.dumps(payload), encoding="utf-8")
+    return export_dir
+
+
+def _write_reconciliation_issue_fixture(root: Path) -> Path:
+    export_dir = root / "reconciliation_issue_export"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    Image.new("RGB", (20, 20), color=(220, 30, 30)).save(export_dir / f"{SAMPLE_MID}-main.jpg", "JPEG")
+    _run_ffmpeg(
+        [
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=green:s=20x20:d=1:r=1",
+            "-pix_fmt",
+            "yuv420p",
+            str(export_dir / f"{VIDEO_ONE_MID}-main.mp4"),
+        ]
+    )
+
+    payload = [
+        {
+            "Date": "2024-01-02 03:04:05 UTC",
+            "Media Id": SAMPLE_MID,
+            "Media Download Url": f"https://example.com/{SAMPLE_MID}-main.jpg",
+            "Media Type": "Image",
+        },
+        {
+            "Date": "2024-02-03 04:05:06 UTC",
+            "Media Id": IMAGE_TWO_MID,
+            "Media Download Url": f"https://example.com/{IMAGE_TWO_MID}.jpg",
+            "Media Type": "Image",
+        },
     ]
     (export_dir / "metadata.json").write_text(json.dumps(payload), encoding="utf-8")
     return export_dir
@@ -161,3 +201,8 @@ def sample_video_export_zip(tmp_path: Path) -> Path:
         for file_path in export_dir.rglob("*"):
             archive.write(file_path, arcname=file_path.relative_to(export_dir))
     return zip_path
+
+
+@pytest.fixture()
+def reconciliation_issue_export_dir(tmp_path: Path) -> Path:
+    return _write_reconciliation_issue_fixture(tmp_path)

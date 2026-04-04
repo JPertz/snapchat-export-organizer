@@ -136,11 +136,20 @@ class SummaryRequest(BaseModel):
 
 
 class MediaSummaryResponse(BaseModel):
+    zip_count: int
+    folder_count: int
     metadata_records: int
     total_media: int
     image_count: int
     video_count: int
+    scan_complete: bool
+    scan_ready: bool
+    found_media_files: int
+    matched_media_files: int
+    missing_media_files: int
+    orphan_media_files: int
     errors: list[str]
+    warnings: list[str]
 
 
 class JobCreateRequest(BaseModel):
@@ -294,11 +303,20 @@ def _serialize_stats(stats: ProcessStats | None) -> StatsResponse | None:
 
 def _serialize_summary(summary: MediaSummary) -> MediaSummaryResponse:
     return MediaSummaryResponse(
+        zip_count=summary.zip_count,
+        folder_count=summary.folder_count,
         metadata_records=summary.metadata_records,
         total_media=summary.total_media,
         image_count=summary.image_count,
         video_count=summary.video_count,
+        scan_complete=summary.scan_complete,
+        scan_ready=summary.scan_ready,
+        found_media_files=summary.found_media_files,
+        matched_media_files=summary.matched_media_files,
+        missing_media_files=summary.missing_media_files,
+        orphan_media_files=summary.orphan_media_files,
         errors=list(summary.errors),
+        warnings=list(summary.warnings),
     )
 
 

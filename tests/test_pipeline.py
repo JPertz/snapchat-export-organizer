@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import subprocess
+import zipfile
 from pathlib import Path
 
 import imageio_ffmpeg
@@ -133,18 +135,118 @@ def test_process_video_sources_from_zip(sample_video_export_zip: Path, tmp_path:
 def test_analyze_sources_from_folder(summary_export_dir: Path) -> None:
     summary = analyze_sources([summary_export_dir])
 
+    assert summary.zip_count == 0
+    assert summary.folder_count == 1
     assert summary.metadata_records == 4
     assert summary.total_media == 4
     assert summary.image_count == 2
     assert summary.video_count == 2
+    assert summary.scan_complete is True
+    assert summary.scan_ready is False
+    assert summary.found_media_files == 0
+    assert summary.matched_media_files == 0
+    assert summary.missing_media_files == 4
+    assert summary.orphan_media_files == 0
     assert len(summary.errors) == 1
+    assert summary.warnings == []
 
 
 def test_analyze_sources_from_zip(summary_export_zip: Path) -> None:
     summary = analyze_sources([summary_export_zip])
 
+    assert summary.zip_count == 1
+    assert summary.folder_count == 0
     assert summary.metadata_records == 4
     assert summary.total_media == 4
     assert summary.image_count == 2
     assert summary.video_count == 2
+    assert summary.scan_complete is True
+    assert summary.scan_ready is False
+    assert summary.found_media_files == 0
+    assert summary.matched_media_files == 0
+    assert summary.missing_media_files == 4
+    assert summary.orphan_media_files == 0
     assert len(summary.errors) == 1
+    assert summary.warnings == []
+
+
+def test_analyze_sources_ready_from_folder(sample_export_dir: Path) -> None:
+    summary = analyze_sources([sample_export_dir])
+
+    assert summary.zip_count == 0
+    assert summary.folder_count == 1
+    assert summary.metadata_records == 1
+    assert summary.total_media == 1
+    assert summary.image_count == 1
+    assert summary.video_count == 0
+    assert summary.scan_complete is True
+    assert summary.scan_ready is True
+    assert summary.found_media_files == 1
+    assert summary.matched_media_files == 1
+    assert summary.missing_media_files == 0
+    assert summary.orphan_media_files == 0
+    assert summary.errors == []
+    assert summary.warnings == []
+
+
+def test_analyze_sources_detects_missing_and_orphan_files(reconciliation_issue_export_dir: Path) -> None:
+    summary = analyze_sources([reconciliation_issue_export_dir])
+
+    assert summary.zip_count == 0
+    assert summary.folder_count == 1
+    assert summary.metadata_records == 2
+    assert summary.total_media == 2
+    assert summary.image_count == 2
+    assert summary.video_count == 0
+    assert summary.scan_complete is True
+    assert summary.scan_ready is False
+    assert summary.found_media_files == 2
+    assert summary.matched_media_files == 1
+    assert summary.missing_media_files == 1
+    assert summary.orphan_media_files == 1
+    assert summary.errors == []
+    assert summary.warnings == []
+
+
+def test_analyze_sources_matches_json_from_one_zip_to_media_in_other_folder(tmp_path: Path) -> None:
+    metadata_dir = tmp_path / "metadata_export"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "metadata.json").write_text(
+        json.dumps(
+            [
+                {
+                    "Date": "2024-01-02 03:04:05 UTC",
+                    "Media Id": "11111111-1111-1111-1111-111111111111",
+                    "Media Download Url": "https://example.com/11111111-1111-1111-1111-111111111111-main.jpg",
+                    "Media Type": "Image",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    metadata_zip = tmp_path / "metadata_export.zip"
+    with zipfile.ZipFile(metadata_zip, "w") as archive:
+        archive.write(metadata_dir / "metadata.json", arcname="metadata.json")
+
+    media_dir = tmp_path / "media_export"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (20, 20), color=(220, 30, 30)).save(
+        media_dir / "11111111-1111-1111-1111-111111111111-main.jpg",
+        "JPEG",
+    )
+
+    summary = analyze_sources([metadata_zip, media_dir])
+
+    assert summary.zip_count == 1
+    assert summary.folder_count == 1
+    assert summary.metadata_records == 1
+    assert summary.total_media == 1
+    assert summary.image_count == 1
+    assert summary.video_count == 0
+    assert summary.scan_complete is True
+    assert summary.scan_ready is True
+    assert summary.found_media_files == 1
+    assert summary.matched_media_files == 1
+    assert summary.missing_media_files == 0
+    assert summary.orphan_media_files == 0
+    assert summary.errors == []

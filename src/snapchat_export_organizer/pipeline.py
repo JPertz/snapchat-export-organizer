@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 import re
 import shutil
@@ -36,6 +37,12 @@ MEDIA_TYPE_KEYS = (
     "Content Type",
     "content_type",
 )
+
+
+@dataclass(slots=True)
+class MediaInventory:
+    media_map: dict[str, MediaFiles] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
 
 def process_sources(
@@ -122,12 +129,14 @@ def analyze_sources(
     try:
         log("Preparing inputs for JSON analysis...")
         expanded_roots = _expand_sources(source_paths, temp_dir, log)
+        _summarize_source_inputs(source_paths, summary)
 
         if not expanded_roots:
             raise ValueError("No readable ZIP files or folders were provided.")
 
         seen_metadata: set[str] = set()
         seen_media: set[str] = set()
+        matchable_mids: set[str] = set()
 
         log("Scanning JSON files for media summary...")
         for root in expanded_roots:
@@ -139,12 +148,28 @@ def analyze_sources(
                     summary.errors.append(f"JSON read failed for {json_path}: {exc}")
                     continue
 
-                _scan_json_summary(payload, seen_metadata, seen_media, summary)
+                _scan_json_summary(payload, seen_metadata, seen_media, matchable_mids, summary)
+
+        log("Reconciling JSON media with discovered files...")
+        inventory = _scan_media_inventory(expanded_roots)
+        found_mids = set(inventory.media_map)
+        summary.found_media_files = len(found_mids)
+        summary.matched_media_files = len(matchable_mids & found_mids)
+        summary.missing_media_files = len(matchable_mids - found_mids)
+        summary.orphan_media_files = len(found_mids - matchable_mids)
+        summary.warnings.extend(inventory.warnings)
+        summary.scan_complete = True
+        summary.scan_ready = (
+            len(summary.errors) == 0
+            and summary.missing_media_files == 0
+            and summary.orphan_media_files == 0
+        )
 
         log(
-            "JSON summary finished. "
+            "Summary scan finished. "
             f"Metadata: {summary.metadata_records}, media: {summary.total_media}, "
-            f"images: {summary.image_count}, videos: {summary.video_count}, errors: {len(summary.errors)}"
+            f"matched: {summary.matched_media_files}, missing: {summary.missing_media_files}, "
+            f"orphan: {summary.orphan_media_files}, errors: {len(summary.errors)}"
         )
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -200,6 +225,7 @@ def _scan_json_summary(
     obj: object,
     seen_metadata: set[str],
     seen_media: set[str],
+    matchable_mids: set[str],
     summary: MediaSummary,
 ) -> None:
     if isinstance(obj, dict):
@@ -208,22 +234,24 @@ def _scan_json_summary(
             seen_metadata.add(maybe_metadata.mid)
             summary.metadata_records += 1
 
-        media_key, media_kind = _extract_media_summary_record(obj)
+        media_key, media_kind, raw_mid = _extract_media_summary_record(obj)
         if media_key is not None and media_kind is not None and media_key not in seen_media:
             seen_media.add(media_key)
             summary.total_media += 1
+            if raw_mid is not None:
+                matchable_mids.add(raw_mid)
             if media_kind == "image":
                 summary.image_count += 1
             elif media_kind == "video":
                 summary.video_count += 1
 
         for value in obj.values():
-            _scan_json_summary(value, seen_metadata, seen_media, summary)
+            _scan_json_summary(value, seen_metadata, seen_media, matchable_mids, summary)
         return
 
     if isinstance(obj, list):
         for item in obj:
-            _scan_json_summary(item, seen_metadata, seen_media, summary)
+            _scan_json_summary(item, seen_metadata, seen_media, matchable_mids, summary)
 
 
 def _scan_json(obj: object, source_file: Path, metadata_map: dict[str, MediaMetadata]) -> None:
@@ -265,7 +293,7 @@ def _extract_metadata_record(record: dict[str, object], source_file: Path) -> Me
     )
 
 
-def _extract_media_summary_record(record: dict[str, object]) -> tuple[str | None, str | None]:
+def _extract_media_summary_record(record: dict[str, object]) -> tuple[str | None, str | None, str | None]:
     raw_url = (
         _coerce_text(record.get("Media Download Url"))
         or _coerce_text(record.get("Download Link"))
@@ -276,10 +304,10 @@ def _extract_media_summary_record(record: dict[str, object]) -> tuple[str | None
 
     media_kind = _classify_media_kind(explicit_type, raw_url)
     if media_kind is None:
-        return None, None
+        return None, None, None
 
     dedupe_key = raw_mid or raw_url.lower() if raw_url else None
-    return dedupe_key, media_kind
+    return dedupe_key, media_kind, raw_mid
 
 
 def _coerce_text(value: object) -> str | None:
@@ -353,8 +381,22 @@ def _extract_lat_lon(record: dict[str, object]) -> tuple[float | None, float | N
     return None, None
 
 
+def _summarize_source_inputs(source_paths: list[Path], summary: MediaSummary) -> None:
+    for source in source_paths:
+        if source.is_file() and source.suffix.lower() == ".zip":
+            summary.zip_count += 1
+        elif source.is_dir():
+            summary.folder_count += 1
+
+
 def _find_media(roots: list[Path], stats: ProcessStats) -> dict[str, MediaFiles]:
-    media_map: dict[str, MediaFiles] = {}
+    inventory = _scan_media_inventory(roots)
+    stats.errors.extend(inventory.warnings)
+    return inventory.media_map
+
+
+def _scan_media_inventory(roots: list[Path]) -> MediaInventory:
+    inventory = MediaInventory()
 
     for root in roots:
         for file_path in root.rglob("*"):
@@ -371,27 +413,28 @@ def _find_media(roots: list[Path], stats: ProcessStats) -> dict[str, MediaFiles]
             if media_kind is None:
                 continue
 
-            current = media_map.get(mid)
+            current = inventory.media_map.get(mid)
             if current is None:
                 current = MediaFiles(mid=mid, media_kind=media_kind)
-                media_map[mid] = current
+                inventory.media_map[mid] = current
 
             if kind == "main":
                 if current.main_path is not None and current.main_path != file_path:
-                    stats.errors.append(f"{mid}: duplicate main media found, using {file_path.name}")
+                    inventory.warnings.append(f"{mid}: duplicate main media found, using {file_path.name}")
                 current.main_path = file_path
                 current.media_kind = media_kind
             else:
                 current.overlay_path = file_path
 
     cleaned_map: dict[str, MediaFiles] = {}
-    for mid, media in media_map.items():
+    for mid, media in inventory.media_map.items():
         if media.main_path is None:
-            stats.errors.append(f"{mid}: overlay found without matching main media")
+            inventory.warnings.append(f"{mid}: overlay found without matching main media")
             continue
         cleaned_map[mid] = media
 
-    return cleaned_map
+    inventory.media_map = cleaned_map
+    return inventory
 
 
 def _merge_media(media: MediaFiles, destination: Path) -> None:
