@@ -3,12 +3,15 @@ $ErrorActionPreference = "Stop"
 python -m pip install --upgrade pip
 python -m pip install -e .
 python -m pip install pyinstaller
+npm install --prefix webui
+npm run build --prefix webui
 
 python -m PyInstaller `
   --noconfirm `
   --clean `
   --windowed `
   --name SnapchatExportOrganizer `
+  --collect-data snapchat_export_organizer `
   --paths src `
   src/snapchat_export_organizer/app.py
 

@@ -1,6 +1,6 @@
 # Snapchat Export Organizer
 
-Windows desktop app for rebuilding Snapchat Memories exports into ready-to-import photos with overlay and EXIF metadata.
+Windows app with a local browser UI for rebuilding Snapchat Memories exports into ready-to-import photos with overlay and EXIF metadata.
 
 ## Goal
 
@@ -18,9 +18,10 @@ This repository contains the source code. End users should later download the re
 
 The project is split into:
 
-- a small desktop UI for Windows users
-- a processing pipeline that can also run without the UI
-- build scripts for creating a standalone `.exe`
+- a local browser UI built with React + Vite
+- a Python processing pipeline that can also run without the UI
+- a FastAPI backend that exposes local-only APIs on `127.0.0.1`
+- build scripts for creating a standalone Windows `.exe`
 - a GitHub Actions workflow for automatic Windows builds
 
 That gives us two good paths:
@@ -45,10 +46,14 @@ snapchat-export-organizer/
 |-- src/snapchat_export_organizer/
 |   |-- app.py
 |   |-- cli.py
-|   |-- gui.py
+|   |-- dialogs.py
+|   |-- launcher.py
 |   |-- models.py
 |   |-- pipeline.py
+|   |-- web.py
 |   `-- __init__.py
+|-- tests/
+|-- webui/
 |-- .gitignore
 |-- pyproject.toml
 `-- README.md
@@ -61,8 +66,31 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e .
+
+cd webui
+npm install
+npm run build
+cd ..
+
 python -m snapchat_export_organizer.app
 ```
+
+That starts the local FastAPI server, opens the default browser on `http://127.0.0.1:<port>`, and keeps all processing on the user's machine.
+
+For frontend development with the Vite dev server:
+
+```powershell
+.venv\Scripts\Activate.ps1
+python -m pip install -e .
+
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD'; python -m uvicorn snapchat_export_organizer.web:create_app --factory --host 127.0.0.1 --port 8000"
+
+cd webui
+npm install
+npm run dev
+```
+
+The Vite config proxies `/api` requests to `http://127.0.0.1:8000`.
 
 ## Build A Windows App
 
@@ -70,7 +98,14 @@ python -m snapchat_export_organizer.app
 ./scripts/build.ps1
 ```
 
-The build script uses PyInstaller and creates a standalone Windows app in `dist/`.
+The build script:
+
+1. installs Python dependencies
+2. installs frontend dependencies
+3. builds the React app into the Python package
+4. packages everything into a standalone Windows app with PyInstaller
+
+The final app starts a local server and opens the browser automatically. End users do not need Python or Node.js installed.
 
 ## Release Strategy For End Users
 
@@ -88,10 +123,24 @@ Recommended release assets later:
 
 With the current workflow, pushing a tag like `v0.1.0` is the intended release path for creating the downloadable Windows ZIP.
 
+## API Overview
+
+The local backend exposes these main endpoints:
+
+- `GET /api/app-state`
+- `POST /api/dialog/select-zips`
+- `POST /api/dialog/select-folder`
+- `POST /api/dialog/select-output`
+- `POST /api/jobs`
+- `GET /api/jobs/{job_id}`
+- `GET /api/jobs/{job_id}/events`
+
+All APIs bind only to `127.0.0.1`.
+
 ## Next Technical Steps
 
 - improve JSON parsing against real Snapchat export samples
 - preserve more metadata fields when available
 - add drag and drop for ZIPs/folders
-- add a nicer progress indicator and report
-- add automated tests with sample fixtures
+- add richer job history and export reports
+- add CI coverage for frontend tests once the Node toolchain is installed in the project environment

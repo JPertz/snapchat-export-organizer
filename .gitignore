@@ -1,5 +1,7 @@
 .venv/
 __pycache__/
+.pycache_alt/
+.tmp/
 *.pyc
 *.pyo
 *.pyd
@@ -9,6 +11,10 @@ dist/
 *.zip
 *.exe
 .pytest_cache/
+.pytest_tmp/
 .mypy_cache/
 .ruff_cache/
-
+pytest-cache-files-*/
+*.egg-info/
+webui/node_modules/
+src/snapchat_export_organizer/web_static/

@@ -9,16 +9,28 @@ description = "Windows desktop app for rebuilding Snapchat Memories exports with
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "fastapi>=0.115.0",
     "Pillow>=10.0.0",
     "piexif>=1.1.3",
+    "uvicorn>=0.32.0",
 ]
 
 [project.scripts]
 snapchat-export-organizer = "snapchat_export_organizer.cli:main"
+snapchat-export-organizer-app = "snapchat_export_organizer.app:main"
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.28.0",
+    "pytest>=9.0.0",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+snapchat_export_organizer = ["web_static/**/*"]

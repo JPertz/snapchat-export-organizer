@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from snapchat_export_organizer.web import LauncherState, create_app
+
+
+def _wait_for_completion(client: TestClient, job_id: str) -> dict:
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        payload = client.get(f"/api/jobs/{job_id}").json()
+        if payload["status"] in {"completed", "failed"}:
+            return payload
+        time.sleep(0.1)
+    raise AssertionError("The job did not complete within the expected time.")
+
+
+def test_app_state_endpoint() -> None:
+    client = TestClient(create_app(LauncherState(port=8765)))
+
+    payload = client.get("/api/app-state").json()
+
+    assert payload["app_name"] == "Snapchat Export Organizer"
+    assert payload["port"] == 8765
+    assert payload["current_job_id"] is None
+
+
+def test_job_creation_requires_sources() -> None:
+    client = TestClient(create_app(LauncherState(port=8765)))
+
+    response = client.post("/api/jobs", json={"sources": [], "output_dir": "C:/output"})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Please add at least one ZIP file or folder."
+
+
+def test_job_creation_requires_output_dir(sample_export_dir: Path) -> None:
+    client = TestClient(create_app(LauncherState(port=8765)))
+
+    response = client.post("/api/jobs", json={"sources": [str(sample_export_dir)], "output_dir": ""})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Please choose an output folder."
+
+
+def test_job_lifecycle_and_event_endpoint(sample_export_dir: Path, tmp_path: Path) -> None:
+    client = TestClient(create_app(LauncherState(port=8765)))
+    output_dir = tmp_path / "output"
+
+    create_response = client.post(
+        "/api/jobs",
+        json={"sources": [str(sample_export_dir)], "output_dir": str(output_dir)},
+    )
+
+    assert create_response.status_code == 201
+    job_id = create_response.json()["job_id"]
+
+    with client.stream("GET", f"/api/jobs/{job_id}/events") as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+
+    payload = _wait_for_completion(client, job_id)
+
+    assert payload["status"] == "completed"
+    assert payload["stats"]["merged_files"] == 1
+    assert payload["stats"]["tagged_files"] == 1
