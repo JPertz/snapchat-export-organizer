@@ -8,6 +8,32 @@ from fastapi.testclient import TestClient
 from snapchat_export_organizer.web import LauncherState, create_app
 
 
+class StubDialogProvider:
+    def __init__(
+        self,
+        *,
+        zip_paths: list[str] | None = None,
+        folder_paths: dict[str, str | None] | None = None,
+        errors: dict[str, str] | None = None,
+    ) -> None:
+        self.zip_paths = list(zip_paths or [])
+        self.folder_paths = dict(folder_paths or {})
+        self.errors = dict(errors or {})
+        self.calls: list[tuple[str, str | None]] = []
+
+    def select_zip_files(self) -> list[str]:
+        self.calls.append(("select_zip_files", None))
+        if "select_zip_files" in self.errors:
+            raise RuntimeError(self.errors["select_zip_files"])
+        return list(self.zip_paths)
+
+    def select_folder(self, title: str) -> str | None:
+        self.calls.append(("select_folder", title))
+        if title in self.errors:
+            raise RuntimeError(self.errors[title])
+        return self.folder_paths.get(title)
+
+
 def _wait_for_completion(client: TestClient, job_id: str) -> dict:
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
@@ -26,6 +52,57 @@ def test_app_state_endpoint() -> None:
     assert payload["app_name"] == "Snapchat Export Organizer"
     assert payload["port"] == 8765
     assert payload["current_job_id"] is None
+
+
+def test_dialog_endpoints_use_injected_provider(monkeypatch) -> None:
+    provider = StubDialogProvider(
+        zip_paths=["C:/exports/one.zip", "C:/exports/two.zip"],
+        folder_paths={
+            "Select a Snapchat export folder": "C:/exports/folder-input",
+            "Select output folder": "C:/exports/output",
+        },
+    )
+    monkeypatch.setattr(
+        "snapchat_export_organizer.web.default_dialog_provider",
+        lambda: (_ for _ in ()).throw(AssertionError("default dialog provider should not be used")),
+    )
+    client = TestClient(create_app(LauncherState(port=8765), dialog_provider=provider))
+
+    zips_response = client.post("/api/dialog/select-zips")
+    folder_response = client.post("/api/dialog/select-folder")
+    output_response = client.post("/api/dialog/select-output")
+
+    assert zips_response.status_code == 200
+    assert zips_response.json() == {"paths": ["C:/exports/one.zip", "C:/exports/two.zip"]}
+    assert folder_response.status_code == 200
+    assert folder_response.json() == {"path": "C:/exports/folder-input"}
+    assert output_response.status_code == 200
+    assert output_response.json() == {"path": "C:/exports/output"}
+    assert provider.calls == [
+        ("select_zip_files", None),
+        ("select_folder", "Select a Snapchat export folder"),
+        ("select_folder", "Select output folder"),
+    ]
+
+
+def test_select_folder_endpoint_returns_null_when_dialog_is_cancelled() -> None:
+    provider = StubDialogProvider(folder_paths={"Select a Snapchat export folder": None})
+    client = TestClient(create_app(LauncherState(port=8765), dialog_provider=provider))
+
+    response = client.post("/api/dialog/select-folder")
+
+    assert response.status_code == 200
+    assert response.json() == {"path": None}
+
+
+def test_select_output_endpoint_returns_provider_errors() -> None:
+    provider = StubDialogProvider(errors={"Select output folder": "Could not open the folder picker."})
+    client = TestClient(create_app(LauncherState(port=8765), dialog_provider=provider))
+
+    response = client.post("/api/dialog/select-output")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Could not open the folder picker."
 
 
 def test_job_creation_requires_sources() -> None:

@@ -282,3 +282,46 @@ def test_analyze_sources_matches_json_from_one_zip_to_media_in_other_folder(tmp_
     assert summary.missing_media_files == 0
     assert summary.orphan_media_files == 0
     assert summary.errors == []
+
+
+def test_analyze_sources_extracts_mid_from_snapchat_query_parameter(tmp_path: Path) -> None:
+    export_dir = tmp_path / "snapchat_export"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    media_mid = "a0ba75ba-71d8-f337-1f28-ad5acb620872"
+    (export_dir / f"{media_mid}-main.mp4").write_bytes(b"fake-video")
+    payload = {
+        "Saved Media": [
+            {
+                "Date": "2026-03-04 14:13:55 UTC",
+                "Media Type": "Video",
+                "Location": "Latitude, Longitude: 50.13433, 8.609106",
+                "Download Link": (
+                    "https://app.snapchat.com/dmd/memories"
+                    "?uid=8315ef08-8c3f-4fd3-a188-36f987eb7d81"
+                    "&sid=37b805b8-1ae6-a061-6e5a-10b21b27ee03"
+                    f"&mid={media_mid}"
+                    "&ts=1772638639856"
+                ),
+                "Media Download Url": (
+                    "https://us-east1-aws.api.snapchat.com/dmd/mm"
+                    "?uid=8315ef08-8c3f-4fd3-a188-36f987eb7d81"
+                    "&sid=37b805b8-1ae6-a061-6e5a-10b21b27ee03"
+                    f"&mid={media_mid}"
+                    "&ts=1772638639856"
+                ),
+            }
+        ]
+    }
+    (export_dir / "memories_history.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    summary = analyze_sources([export_dir])
+
+    assert summary.metadata_records == 1
+    assert summary.total_media == 1
+    assert summary.image_count == 0
+    assert summary.video_count == 1
+    assert summary.matched_media_files == 1
+    assert summary.missing_media_files == 0
+    assert summary.orphan_media_files == 0
+    assert summary.scan_ready is True

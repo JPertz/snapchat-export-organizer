@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Iterable
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import piexif
@@ -381,6 +382,20 @@ def _coerce_text(value: object) -> str | None:
 def _extract_mid_from_text(value: str | None) -> str | None:
     if not value:
         return None
+
+    # Real Snapchat export links often contain multiple UUID-like query params
+    # such as uid, sid, and mid. We must prefer the explicit mid value.
+    parsed = urlparse(value)
+    for key in ("mid", "media_id", "mediaId"):
+        query_value = parse_qs(parsed.query).get(key, [])
+        if query_value:
+            candidate = query_value[0].strip().lower()
+            if re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                candidate,
+                re.IGNORECASE,
+            ):
+                return candidate
 
     match = re.search(
         r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",

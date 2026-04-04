@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .dialogs import select_folder, select_zip_files
+from .dialogs import DialogProvider, default_dialog_provider
 from .models import MediaSummary, ProcessProgress, ProcessStats
 from .pipeline import analyze_sources, process_sources
 
@@ -381,12 +381,17 @@ def _serialize_summary(summary: MediaSummary) -> MediaSummaryResponse:
     )
 
 
-def create_app(launcher_state: LauncherState | None = None) -> FastAPI:
+def create_app(
+    launcher_state: LauncherState | None = None,
+    dialog_provider: DialogProvider | None = None,
+) -> FastAPI:
     state = launcher_state or LauncherState()
     jobs = JobManager()
+    dialogs = dialog_provider or default_dialog_provider()
     app = FastAPI(title="Snapchat Export Organizer")
     app.state.launcher_state = state
     app.state.jobs = jobs
+    app.state.dialog_provider = dialogs
 
     assets_dir = _static_dir() / "assets"
     if assets_dir.exists():
@@ -406,21 +411,21 @@ def create_app(launcher_state: LauncherState | None = None) -> FastAPI:
     @app.post("/api/dialog/select-zips", response_model=DialogPathsResponse)
     def api_select_zips() -> DialogPathsResponse:
         try:
-            return DialogPathsResponse(paths=select_zip_files())
+            return DialogPathsResponse(paths=dialogs.select_zip_files())
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.post("/api/dialog/select-folder", response_model=DialogPathResponse)
     def api_select_folder() -> DialogPathResponse:
         try:
-            return DialogPathResponse(path=select_folder("Select a Snapchat export folder"))
+            return DialogPathResponse(path=dialogs.select_folder("Select a Snapchat export folder"))
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.post("/api/dialog/select-output", response_model=DialogPathResponse)
     def api_select_output() -> DialogPathResponse:
         try:
-            return DialogPathResponse(path=select_folder("Select output folder"))
+            return DialogPathResponse(path=dialogs.select_folder("Select output folder"))
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 

@@ -9,6 +9,7 @@ import webbrowser
 
 import uvicorn
 
+from .dialogs import NativeDialogService
 from .web import LauncherState, create_app
 
 
@@ -33,7 +34,8 @@ def _wait_for_server(url: str, timeout_seconds: float = 15.0) -> None:
 def run() -> None:
     port = _find_free_port()
     launcher_state = LauncherState(port=port)
-    app = create_app(launcher_state)
+    dialog_service = NativeDialogService()
+    app = create_app(launcher_state, dialog_provider=dialog_service)
 
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
@@ -42,13 +44,14 @@ def run() -> None:
     server_thread = threading.Thread(target=server.run, daemon=True, name="snapchat-export-organizer-server")
     server_thread.start()
 
-    app_url = f"http://127.0.0.1:{port}"
-    _wait_for_server(app_url)
-    webbrowser.open(app_url, new=1)
-
-    started_at = time.monotonic()
     try:
+        app_url = f"http://127.0.0.1:{port}"
+        _wait_for_server(app_url)
+        webbrowser.open(app_url, new=1)
+
+        started_at = time.monotonic()
         while server_thread.is_alive():
+            dialog_service.pump_events(timeout_seconds=0.1)
             if launcher_state.shutdown_requested.is_set():
                 server.should_exit = True
 
@@ -62,8 +65,10 @@ def run() -> None:
             if server.should_exit:
                 break
 
-            time.sleep(1.0)
+            time.sleep(0.1)
     except KeyboardInterrupt:
         server.should_exit = True
     finally:
+        server.should_exit = True
+        dialog_service.close()
         server_thread.join(timeout=15.0)

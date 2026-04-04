@@ -44,6 +44,8 @@ const initialProgress = {
   estimated_remaining_seconds: null,
 };
 
+const DIALOG_REQUEST_TIMEOUT_MS = 15000;
+
 function dedupePaths(currentPaths, incomingPaths) {
   const known = new Set(currentPaths);
   const merged = [...currentPaths];
@@ -74,6 +76,25 @@ async function readJson(url, options) {
   }
 
   return response.json();
+}
+
+async function readDialogJson(url, options, timeoutMessage) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), DIALOG_REQUEST_TIMEOUT_MS);
+
+  try {
+    return await readJson(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(timeoutMessage);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 function formatPhaseLabel(phase) {
@@ -117,7 +138,8 @@ function App() {
   const [stats, setStats] = useState(initialStats);
   const [progress, setProgress] = useState(initialProgress);
   const [errorMessage, setErrorMessage] = useState("");
-  const [isSelecting, setIsSelecting] = useState(false);
+  const [inputPickerBusy, setInputPickerBusy] = useState("");
+  const [outputPickerBusy, setOutputPickerBusy] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showInputPicker, setShowInputPicker] = useState(false);
   const eventSourceRef = useRef(null);
@@ -253,46 +275,58 @@ function App() {
 
   const handleSelectZips = async () => {
     setShowInputPicker(false);
-    setIsSelecting(true);
+    setInputPickerBusy("zips");
     setErrorMessage("");
     try {
-      const payload = await readJson("/api/dialog/select-zips", { method: "POST" });
+      const payload = await readDialogJson(
+        "/api/dialog/select-zips",
+        { method: "POST" },
+        "The ZIP file picker did not respond. Please try again."
+      );
       setSources((current) => dedupePaths(current, payload.paths));
     } catch (error) {
       setErrorMessage(error.message);
     } finally {
-      setIsSelecting(false);
+      setInputPickerBusy("");
     }
   };
 
   const handleSelectFolder = async () => {
     setShowInputPicker(false);
-    setIsSelecting(true);
+    setInputPickerBusy("folder");
     setErrorMessage("");
     try {
-      const payload = await readJson("/api/dialog/select-folder", { method: "POST" });
+      const payload = await readDialogJson(
+        "/api/dialog/select-folder",
+        { method: "POST" },
+        "The folder picker did not respond. Please try again."
+      );
       if (payload.path) {
         setSources((current) => dedupePaths(current, [payload.path]));
       }
     } catch (error) {
       setErrorMessage(error.message);
     } finally {
-      setIsSelecting(false);
+      setInputPickerBusy("");
     }
   };
 
   const handleSelectOutput = async () => {
-    setIsSelecting(true);
+    setOutputPickerBusy(true);
     setErrorMessage("");
     try {
-      const payload = await readJson("/api/dialog/select-output", { method: "POST" });
+      const payload = await readDialogJson(
+        "/api/dialog/select-output",
+        { method: "POST" },
+        "The output folder picker did not respond. Please try again."
+      );
       if (payload.path) {
         setOutputDir(payload.path);
       }
     } catch (error) {
       setErrorMessage(error.message);
     } finally {
-      setIsSelecting(false);
+      setOutputPickerBusy(false);
     }
   };
 
@@ -343,6 +377,7 @@ function App() {
   };
 
   const running = jobStatus === "running";
+  const inputPickerActive = inputPickerBusy.length > 0;
   const summaryErrors = summaryData.errors ?? [];
   const summaryWarnings = summaryData.warnings ?? [];
   const readyToStart =
@@ -502,17 +537,17 @@ function App() {
                 className="secondary-button"
                 type="button"
                 onClick={() => setShowInputPicker((current) => !current)}
-                disabled={isSelecting || running}
+                disabled={inputPickerActive || running}
               >
-                Add inputs
+                {inputPickerActive ? "Opening..." : "Add inputs"}
               </button>
               {showInputPicker ? (
                 <div className="input-picker-menu">
-                  <button className="ghost-button" type="button" onClick={handleSelectZips} disabled={isSelecting || running}>
-                    ZIP files
+                  <button className="ghost-button" type="button" onClick={handleSelectZips} disabled={inputPickerActive || running}>
+                    {inputPickerBusy === "zips" ? "Opening ZIP picker..." : "ZIP files"}
                   </button>
-                  <button className="ghost-button" type="button" onClick={handleSelectFolder} disabled={isSelecting || running}>
-                    Folder
+                  <button className="ghost-button" type="button" onClick={handleSelectFolder} disabled={inputPickerActive || running}>
+                    {inputPickerBusy === "folder" ? "Opening folder picker..." : "Folder"}
                   </button>
                 </div>
               ) : null}
@@ -554,8 +589,13 @@ function App() {
                 <h3>Output folder</h3>
                 <p>Finished files are written directly into this folder while processing runs.</p>
               </div>
-              <button className="secondary-button" type="button" onClick={handleSelectOutput} disabled={isSelecting || running}>
-                Browse
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={handleSelectOutput}
+                disabled={outputPickerBusy || running}
+              >
+                {outputPickerBusy ? "Opening..." : "Browse"}
               </button>
             </div>
             <input
