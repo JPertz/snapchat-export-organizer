@@ -344,15 +344,24 @@ def create_app(launcher_state: LauncherState | None = None) -> FastAPI:
 
     @app.post("/api/dialog/select-zips", response_model=DialogPathsResponse)
     def api_select_zips() -> DialogPathsResponse:
-        return DialogPathsResponse(paths=select_zip_files())
+        try:
+            return DialogPathsResponse(paths=select_zip_files())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.post("/api/dialog/select-folder", response_model=DialogPathResponse)
     def api_select_folder() -> DialogPathResponse:
-        return DialogPathResponse(path=select_folder("Select a Snapchat export folder"))
+        try:
+            return DialogPathResponse(path=select_folder("Select a Snapchat export folder"))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.post("/api/dialog/select-output", response_model=DialogPathResponse)
     def api_select_output() -> DialogPathResponse:
-        return DialogPathResponse(path=select_folder("Select output folder"))
+        try:
+            return DialogPathResponse(path=select_folder("Select output folder"))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.post("/api/analysis/summary", response_model=MediaSummaryResponse)
     def api_summary(payload: SummaryRequest) -> MediaSummaryResponse:

@@ -72,6 +72,7 @@ function App() {
   const [errorMessage, setErrorMessage] = useState("");
   const [isSelecting, setIsSelecting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showInputPicker, setShowInputPicker] = useState(false);
   const eventSourceRef = useRef(null);
 
   const loadAppState = async () => {
@@ -194,6 +195,7 @@ function App() {
   }, [job?.job_id]);
 
   const handleSelectZips = async () => {
+    setShowInputPicker(false);
     setIsSelecting(true);
     setErrorMessage("");
     try {
@@ -207,6 +209,7 @@ function App() {
   };
 
   const handleSelectFolder = async () => {
+    setShowInputPicker(false);
     setIsSelecting(true);
     setErrorMessage("");
     try {
@@ -275,6 +278,7 @@ function App() {
 
   const clearSources = () => {
     setSources([]);
+    setShowInputPicker(false);
   };
 
   const running = jobStatus === "running";
@@ -426,12 +430,26 @@ function App() {
           ) : null}
 
           <div className="action-row">
-            <button className="secondary-button" type="button" onClick={handleSelectZips} disabled={isSelecting || running}>
-              Add ZIP files
-            </button>
-            <button className="secondary-button" type="button" onClick={handleSelectFolder} disabled={isSelecting || running}>
-              Add folder
-            </button>
+            <div className="input-picker">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => setShowInputPicker((current) => !current)}
+                disabled={isSelecting || running}
+              >
+                Add inputs
+              </button>
+              {showInputPicker ? (
+                <div className="input-picker-menu">
+                  <button className="ghost-button" type="button" onClick={handleSelectZips} disabled={isSelecting || running}>
+                    ZIP files
+                  </button>
+                  <button className="ghost-button" type="button" onClick={handleSelectFolder} disabled={isSelecting || running}>
+                    Folder
+                  </button>
+                </div>
+              ) : null}
+            </div>
             <button className="ghost-button" type="button" onClick={clearSources} disabled={sources.length === 0 || running}>
               Clear list
             </button>
