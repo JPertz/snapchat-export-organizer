@@ -27,6 +27,23 @@ const initialStats = {
   errors: [],
 };
 
+const initialProgress = {
+  phase: "idle",
+  total_files: 0,
+  completed_files: 0,
+  files_left: 0,
+  merged_files: 0,
+  tagged_files: 0,
+  skipped_files: 0,
+  error_count: 0,
+  progress_percent: 0,
+  current_mid: null,
+  current_output_name: null,
+  started_at: null,
+  elapsed_seconds: 0,
+  estimated_remaining_seconds: null,
+};
+
 function dedupePaths(currentPaths, incomingPaths) {
   const known = new Set(currentPaths);
   const merged = [...currentPaths];
@@ -59,6 +76,35 @@ async function readJson(url, options) {
   return response.json();
 }
 
+function formatPhaseLabel(phase) {
+  switch (phase) {
+    case "preparing":
+      return "Preparing inputs";
+    case "loading_metadata":
+      return "Loading metadata";
+    case "scanning_media":
+      return "Scanning media";
+    case "processing":
+      return "Processing files";
+    case "completed":
+      return "All files processed";
+    case "failed":
+      return "Processing failed";
+    default:
+      return "Waiting to start";
+  }
+}
+
+function formatDuration(totalSeconds) {
+  const rounded = Math.max(0, Math.round(totalSeconds ?? 0));
+  const minutes = Math.floor(rounded / 60);
+  const seconds = rounded % 60;
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
 function App() {
   const [appState, setAppState] = useState(null);
   const [sources, setSources] = useState([]);
@@ -69,11 +115,13 @@ function App() {
   const [jobStatus, setJobStatus] = useState("ready");
   const [logLines, setLogLines] = useState([]);
   const [stats, setStats] = useState(initialStats);
+  const [progress, setProgress] = useState(initialProgress);
   const [errorMessage, setErrorMessage] = useState("");
   const [isSelecting, setIsSelecting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showInputPicker, setShowInputPicker] = useState(false);
   const eventSourceRef = useRef(null);
+  const logSectionRef = useRef(null);
 
   const loadAppState = async () => {
     const payload = await readJson("/api/app-state");
@@ -85,6 +133,7 @@ function App() {
     setJob(payload);
     setJobStatus(payload.status);
     setStats(payload.stats ?? initialStats);
+    setProgress(payload.progress ?? initialProgress);
     setLogLines(payload.logs ?? []);
   };
 
@@ -166,6 +215,13 @@ function App() {
       setLogLines((current) => [...current, payload.message]);
     };
 
+    const updateProgress = (event) => {
+      const payload = JSON.parse(event.data);
+      if (payload.progress) {
+        setProgress(payload.progress);
+      }
+    };
+
     const refreshJob = () => {
       loadJob(job.job_id).catch((error) => {
         setErrorMessage(error.message);
@@ -173,6 +229,7 @@ function App() {
     };
 
     stream.addEventListener("log", appendLog);
+    stream.addEventListener("progress", updateProgress);
     stream.addEventListener("status", refreshJob);
     stream.addEventListener("completed", () => {
       refreshJob();
@@ -244,6 +301,7 @@ function App() {
     setErrorMessage("");
     setLogLines([]);
     setStats(initialStats);
+    setProgress(initialProgress);
     try {
       const payload = await readJson("/api/jobs", {
         method: "POST",
@@ -256,6 +314,9 @@ function App() {
         }),
       });
       await loadJob(payload.job_id);
+      window.requestAnimationFrame(() => {
+        logSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
     } catch (error) {
       setErrorMessage(error.message);
     } finally {
@@ -323,6 +384,12 @@ function App() {
         : jobStatus === "failed"
           ? "Failed"
           : "Ready";
+  const etaLabel =
+    progress.estimated_remaining_seconds == null
+      ? progress.completed_files >= 3 || jobStatus === "completed"
+        ? "Done"
+        : "Calculating..."
+      : formatDuration(progress.estimated_remaining_seconds);
 
   return (
     <div className="page-shell">
@@ -423,7 +490,7 @@ function App() {
               {running || isSubmitting ? "Processing..." : "Start processing"}
             </button>
           </div>
-          {!readyToStart ? (
+          {!readyToStart && sources.length > 0 ? (
             <div className="alert-inline">
               {startBlockedReason}
             </div>
@@ -522,13 +589,64 @@ function App() {
         </section>
       </main>
 
-      <section className="log-card">
+      <section className="log-card" ref={logSectionRef}>
         <div className="panel-header">
           <div>
             <p className="eyebrow">Processing Log</p>
             <h2>Live status updates</h2>
           </div>
           <div className={`status-badge status-${jobStatus}`}>{statusLabel}</div>
+        </div>
+
+        <section className="progress-grid">
+          <article className="progress-card">
+            <span>Files left</span>
+            <strong>{progress.files_left}</strong>
+          </article>
+          <article className="progress-card">
+            <span>Done</span>
+            <strong>{progress.completed_files}</strong>
+          </article>
+          <article className="progress-card">
+            <span>Tagged</span>
+            <strong>{progress.tagged_files}</strong>
+          </article>
+          <article className="progress-card">
+            <span>Skipped</span>
+            <strong>{progress.skipped_files}</strong>
+          </article>
+          <article className="progress-card">
+            <span>Errors</span>
+            <strong>{progress.error_count}</strong>
+          </article>
+          <article className="progress-card">
+            <span>Estimated time left</span>
+            <strong>{etaLabel}</strong>
+          </article>
+        </section>
+
+        <div className="progress-panel">
+          <div className="progress-meta">
+            <div>
+              <span>Current step</span>
+              <strong>{formatPhaseLabel(progress.phase)}</strong>
+            </div>
+            <div>
+              <span>Current file</span>
+              <strong>{progress.current_output_name ?? "Waiting..."}</strong>
+            </div>
+            <div>
+              <span>Elapsed time</span>
+              <strong>{formatDuration(progress.elapsed_seconds)}</strong>
+            </div>
+          </div>
+          <div className="progress-bar-track" aria-label="Processing progress">
+            <div className="progress-bar-fill" style={{ width: `${progress.progress_percent}%` }} />
+          </div>
+          <div className="progress-caption">
+            <span>{progress.total_files > 0 ? `${progress.completed_files} / ${progress.total_files} files` : "Waiting for file count..."}</span>
+            <strong>{Math.round(progress.progress_percent)}%</strong>
+          </div>
         </div>
 
         <div className="log-surface">

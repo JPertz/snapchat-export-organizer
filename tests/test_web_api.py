@@ -139,4 +139,34 @@ def test_job_lifecycle_and_event_endpoint(sample_export_dir: Path, tmp_path: Pat
     assert payload["status"] == "completed"
     assert payload["stats"]["merged_files"] == 1
     assert payload["stats"]["tagged_files"] == 1
+    assert payload["progress"]["phase"] == "completed"
+    assert payload["progress"]["completed_files"] == 1
+    assert payload["progress"]["files_left"] == 0
     assert len(list(output_dir.glob("*.jpg"))) == 1
+
+
+def test_job_events_include_progress_updates(progress_export_dir: Path, tmp_path: Path) -> None:
+    client = TestClient(create_app(LauncherState(port=8765)))
+    output_dir = tmp_path / "output-progress-api"
+
+    create_response = client.post(
+        "/api/jobs",
+        json={"sources": [str(progress_export_dir)], "output_dir": str(output_dir)},
+    )
+
+    assert create_response.status_code == 201
+    job_id = create_response.json()["job_id"]
+
+    with client.stream("GET", f"/api/jobs/{job_id}/events") as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_text())
+
+    assert "event: progress" in body
+    assert '"total_files": 4' in body
+
+    payload = _wait_for_completion(client, job_id)
+    assert payload["status"] == "completed"
+    assert payload["progress"]["phase"] == "completed"
+    assert payload["progress"]["total_files"] == 4
+    assert payload["progress"]["completed_files"] == 4
+    assert payload["progress"]["files_left"] == 0

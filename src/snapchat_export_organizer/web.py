@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .dialogs import select_folder, select_zip_files
-from .models import MediaSummary, ProcessStats
+from .models import MediaSummary, ProcessProgress, ProcessStats
 from .pipeline import analyze_sources, process_sources
 
 
@@ -131,6 +131,23 @@ class StatsResponse(BaseModel):
     errors: list[str]
 
 
+class ProgressResponse(BaseModel):
+    phase: str
+    total_files: int
+    completed_files: int
+    files_left: int
+    merged_files: int
+    tagged_files: int
+    skipped_files: int
+    error_count: int
+    progress_percent: float
+    current_mid: str | None = None
+    current_output_name: str | None = None
+    started_at: str | None = None
+    elapsed_seconds: float
+    estimated_remaining_seconds: float | None = None
+
+
 class SummaryRequest(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
@@ -171,6 +188,7 @@ class JobResponse(BaseModel):
     ended_at: str | None = None
     logs: list[str] = Field(default_factory=list)
     stats: StatsResponse | None = None
+    progress: ProgressResponse | None = None
     error: str | None = None
 
 
@@ -195,6 +213,7 @@ class JobRecord:
     logs: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
     stats: ProcessStats | None = None
+    progress: ProcessProgress | None = None
     error: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -235,6 +254,7 @@ class JobManager:
                 ended_at=job.ended_at,
                 logs=list(job.logs),
                 stats=_serialize_stats(job.stats),
+                progress=_serialize_progress(job.progress),
                 error=job.error,
             )
 
@@ -253,6 +273,7 @@ class JobManager:
                 sources=job.sources,
                 output_dir=job.output_dir,
                 status=lambda message: self._append_log(job, message),
+                progress=lambda state: self._update_progress(job, state),
             )
             with job.lock:
                 job.status = "completed"
@@ -261,19 +282,38 @@ class JobManager:
             self._record_event(
                 job,
                 event_type="completed",
-                payload={"status": "completed", "stats": _serialize_stats(stats).model_dump()},
+                payload={
+                    "status": "completed",
+                    "stats": _serialize_stats(stats).model_dump(),
+                    "progress": _serialize_progress(job.progress).model_dump() if job.progress is not None else None,
+                },
             )
         except Exception as exc:
             with job.lock:
                 job.status = "failed"
                 job.ended_at = _utc_now()
                 job.error = str(exc)
-            self._record_event(job, event_type="failed", payload={"status": "failed", "error": str(exc)})
+            self._record_event(
+                job,
+                event_type="failed",
+                payload={
+                    "status": "failed",
+                    "error": str(exc),
+                    "progress": _serialize_progress(job.progress).model_dump() if job.progress is not None else None,
+                },
+            )
 
     def _append_log(self, job: JobRecord, message: str) -> None:
         with job.lock:
             job.logs.append(message)
         self._record_event(job, event_type="log", payload={"message": message})
+
+    def _update_progress(self, job: JobRecord, state: ProcessProgress) -> None:
+        with job.lock:
+            job.progress = state
+        progress_payload = _serialize_progress(state)
+        if progress_payload is not None:
+            self._record_event(job, event_type="progress", payload={"progress": progress_payload.model_dump()})
 
     def _record_event(self, job: JobRecord, *, event_type: str, payload: dict[str, Any]) -> None:
         with job.lock:
@@ -298,6 +338,27 @@ def _serialize_stats(stats: ProcessStats | None) -> StatsResponse | None:
         skipped_files=stats.skipped_files,
         error_count=len(stats.errors),
         errors=list(stats.errors),
+    )
+
+
+def _serialize_progress(progress: ProcessProgress | None) -> ProgressResponse | None:
+    if progress is None:
+        return None
+    return ProgressResponse(
+        phase=progress.phase,
+        total_files=progress.total_files,
+        completed_files=progress.completed_files,
+        files_left=progress.files_left,
+        merged_files=progress.merged_files,
+        tagged_files=progress.tagged_files,
+        skipped_files=progress.skipped_files,
+        error_count=progress.error_count,
+        progress_percent=progress.progress_percent,
+        current_mid=progress.current_mid,
+        current_output_name=progress.current_output_name,
+        started_at=progress.started_at,
+        elapsed_seconds=progress.elapsed_seconds,
+        estimated_remaining_seconds=progress.estimated_remaining_seconds,
     )
 
 

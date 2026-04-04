@@ -17,10 +17,11 @@ from uuid import uuid4
 import piexif
 from PIL import Image, ImageOps
 
-from .models import MediaFiles, MediaMetadata, MediaSummary, ProcessStats
+from .models import MediaFiles, MediaMetadata, MediaSummary, ProcessProgress, ProcessStats
 
 
 StatusCallback = Callable[[str], None]
+ProgressCallback = Callable[[ProcessProgress], None]
 
 MID_RE = re.compile(
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(main|overlay)\.([a-z0-9]+)$",
@@ -49,65 +50,128 @@ def process_sources(
     sources: Iterable[str | Path],
     output_dir: str | Path,
     status: StatusCallback | None = None,
+    progress: ProgressCallback | None = None,
 ) -> ProcessStats:
     stats = ProcessStats()
     source_paths = [Path(item).expanduser().resolve() for item in sources]
     output_root = Path(output_dir).expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
+    started_at = datetime.now(timezone.utc)
+    started_monotonic = time.monotonic()
+    progress_state = ProcessProgress(phase="preparing", started_at=started_at.isoformat())
 
     def log(message: str) -> None:
         if status is not None:
             status(message)
 
+    def emit_progress() -> None:
+        if progress is not None:
+            progress(
+                ProcessProgress(
+                    phase=progress_state.phase,
+                    total_files=progress_state.total_files,
+                    completed_files=progress_state.completed_files,
+                    files_left=progress_state.files_left,
+                    merged_files=progress_state.merged_files,
+                    tagged_files=progress_state.tagged_files,
+                    skipped_files=progress_state.skipped_files,
+                    error_count=progress_state.error_count,
+                    progress_percent=progress_state.progress_percent,
+                    current_mid=progress_state.current_mid,
+                    current_output_name=progress_state.current_output_name,
+                    started_at=progress_state.started_at,
+                    elapsed_seconds=progress_state.elapsed_seconds,
+                    estimated_remaining_seconds=progress_state.estimated_remaining_seconds,
+                )
+            )
+
+    def refresh_progress(*, phase: str | None = None, current_mid: str | None = None, current_output_name: str | None = None) -> None:
+        if phase is not None:
+            progress_state.phase = phase
+        progress_state.current_mid = current_mid
+        progress_state.current_output_name = current_output_name
+        progress_state.merged_files = stats.merged_files
+        progress_state.tagged_files = stats.tagged_files
+        progress_state.skipped_files = stats.skipped_files
+        progress_state.error_count = len(stats.errors)
+        progress_state.files_left = max(progress_state.total_files - progress_state.completed_files, 0)
+        progress_state.progress_percent = (
+            round((progress_state.completed_files / progress_state.total_files) * 100, 1)
+            if progress_state.total_files
+            else 0.0
+        )
+        progress_state.elapsed_seconds = max(time.monotonic() - started_monotonic, 0.0)
+        if progress_state.completed_files >= 3 and progress_state.files_left > 0:
+            average_seconds = progress_state.elapsed_seconds / progress_state.completed_files
+            progress_state.estimated_remaining_seconds = average_seconds * progress_state.files_left
+        else:
+            progress_state.estimated_remaining_seconds = None
+        emit_progress()
+
+    refresh_progress(phase="preparing")
+
     temp_dir = _create_temp_work_dir()
     try:
-        log("Preparing inputs...")
-        expanded_roots = _expand_sources(source_paths, temp_dir, log)
+        try:
+            log("Preparing inputs...")
+            expanded_roots = _expand_sources(source_paths, temp_dir, log)
 
-        if not expanded_roots:
-            raise ValueError("No readable ZIP files or folders were provided.")
+            if not expanded_roots:
+                raise ValueError("No readable ZIP files or folders were provided.")
 
-        log("Loading metadata from JSON files...")
-        metadata_map = _load_metadata(expanded_roots, stats, log)
-        stats.discovered_metadata = len(metadata_map)
+            log("Loading metadata from JSON files...")
+            refresh_progress(phase="loading_metadata")
+            metadata_map = _load_metadata(expanded_roots, stats, log)
+            stats.discovered_metadata = len(metadata_map)
 
-        log("Scanning for Snapchat media files...")
-        media_map = _find_media(expanded_roots, stats)
-        stats.discovered_media = len(media_map)
+            log("Scanning for Snapchat media files...")
+            refresh_progress(phase="scanning_media")
+            media_map = _find_media(expanded_roots, stats)
+            stats.discovered_media = len(media_map)
 
-        if not media_map:
-            raise ValueError("No Snapchat memory images or videos were found in the selected inputs.")
+            if not media_map:
+                raise ValueError("No Snapchat memory images or videos were found in the selected inputs.")
 
-        for media in media_map.values():
-            output_name = _build_output_name(media, metadata_map.get(media.mid))
-            final_path = output_root / output_name
-            staged_path = temp_dir / f".staging-{media.mid}{_output_extension(media.media_kind)}"
+            progress_state.total_files = len(media_map)
+            refresh_progress(phase="processing")
 
-            try:
-                _merge_media(media, staged_path)
-                stats.merged_files += 1
+            for media in media_map.values():
+                output_name = _build_output_name(media, metadata_map.get(media.mid))
+                final_path = output_root / output_name
+                staged_path = temp_dir / f".staging-{media.mid}{_output_extension(media.media_kind)}"
+                refresh_progress(phase="processing", current_mid=media.mid, current_output_name=output_name)
 
-                metadata = metadata_map.get(media.mid)
-                if metadata and _has_taggable_metadata(metadata):
-                    _write_tagged_media(media.media_kind, staged_path, final_path, metadata)
-                    stats.tagged_files += 1
-                else:
-                    if final_path.exists():
-                        final_path.unlink()
-                    staged_path.replace(final_path)
-                    stats.skipped_files += 1
-            except Exception as exc:
-                stats.errors.append(f"{media.mid}: {exc}")
-                log(f"Error while processing {media.mid}: {exc}")
-            finally:
-                if staged_path.exists():
-                    _delete_with_retries(staged_path)
+                try:
+                    _merge_media(media, staged_path)
+                    stats.merged_files += 1
 
-        log(
-            "Finished. "
-            f"Merged: {stats.merged_files}, tagged: {stats.tagged_files}, "
-            f"copied without metadata: {stats.skipped_files}, errors: {len(stats.errors)}"
-        )
+                    metadata = metadata_map.get(media.mid)
+                    if metadata and _has_taggable_metadata(metadata):
+                        _write_tagged_media(media.media_kind, staged_path, final_path, metadata)
+                        stats.tagged_files += 1
+                    else:
+                        if final_path.exists():
+                            final_path.unlink()
+                        staged_path.replace(final_path)
+                        stats.skipped_files += 1
+                except Exception as exc:
+                    stats.errors.append(f"{media.mid}: {exc}")
+                    log(f"Error while processing {media.mid}: {exc}")
+                finally:
+                    progress_state.completed_files += 1
+                    refresh_progress(phase="processing", current_mid=media.mid, current_output_name=output_name)
+                    if staged_path.exists():
+                        _delete_with_retries(staged_path)
+
+            refresh_progress(phase="completed")
+            log(
+                "Finished. "
+                f"Merged: {stats.merged_files}, tagged: {stats.tagged_files}, "
+                f"copied without metadata: {stats.skipped_files}, errors: {len(stats.errors)}"
+            )
+        except Exception:
+            refresh_progress(phase="failed")
+            raise
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

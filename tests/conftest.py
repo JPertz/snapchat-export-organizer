@@ -14,6 +14,8 @@ SAMPLE_MID = "11111111-1111-1111-1111-111111111111"
 IMAGE_TWO_MID = "22222222-2222-2222-2222-222222222222"
 VIDEO_ONE_MID = "33333333-3333-3333-3333-333333333333"
 VIDEO_TWO_MID = "44444444-4444-4444-4444-444444444444"
+EXTRA_IMAGE_THREE_MID = "55555555-5555-5555-5555-555555555555"
+EXTRA_IMAGE_FOUR_MID = "66666666-6666-6666-6666-666666666666"
 
 
 def _write_export_fixture(root: Path) -> Path:
@@ -122,6 +124,35 @@ def _write_video_export_fixture(root: Path) -> Path:
     return export_dir
 
 
+def _write_progress_export_fixture(root: Path) -> Path:
+    export_dir = root / "progress_export"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = []
+    media_rows = [
+        (SAMPLE_MID, (220, 30, 30)),
+        (IMAGE_TWO_MID, (40, 180, 80)),
+        (EXTRA_IMAGE_THREE_MID, (30, 90, 220)),
+        (EXTRA_IMAGE_FOUR_MID, (180, 150, 30)),
+    ]
+
+    for index, (mid, color) in enumerate(media_rows, start=1):
+        Image.new("RGB", (20, 20), color=color).save(export_dir / f"{mid}-main.jpg", "JPEG")
+        payload.append(
+            {
+                "Date": f"2024-01-0{index} 03:04:05 UTC",
+                "Media Id": mid,
+                "Media Download Url": f"https://example.com/{mid}-main.jpg",
+                "Media Type": "Image",
+                "Latitude": 52.52,
+                "Longitude": 13.405,
+            }
+        )
+
+    (export_dir / "metadata.json").write_text(json.dumps(payload), encoding="utf-8")
+    return export_dir
+
+
 def _write_reconciliation_issue_fixture(root: Path) -> Path:
     export_dir = root / "reconciliation_issue_export"
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -206,3 +237,8 @@ def sample_video_export_zip(tmp_path: Path) -> Path:
 @pytest.fixture()
 def reconciliation_issue_export_dir(tmp_path: Path) -> Path:
     return _write_reconciliation_issue_fixture(tmp_path)
+
+
+@pytest.fixture()
+def progress_export_dir(tmp_path: Path) -> Path:
+    return _write_progress_export_fixture(tmp_path)

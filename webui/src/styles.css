@@ -364,6 +364,75 @@ code {
   padding: 24px;
 }
 
+.progress-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.progress-card {
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: rgba(34, 50, 76, 0.78);
+}
+
+.progress-card span,
+.progress-meta span,
+.progress-caption span {
+  display: block;
+  color: #9fb0c7;
+  margin-bottom: 8px;
+}
+
+.progress-card strong {
+  font-size: 1.4rem;
+}
+
+.progress-panel {
+  margin-top: 16px;
+  padding: 18px;
+  border-radius: 20px;
+  background: rgba(29, 42, 64, 0.72);
+  border: 1px solid rgba(74, 94, 131, 0.48);
+}
+
+.progress-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.progress-meta strong,
+.progress-caption strong {
+  color: #f3f6fc;
+}
+
+.progress-bar-track {
+  height: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(13, 22, 35, 0.95);
+  border: 1px solid rgba(63, 83, 118, 0.52);
+}
+
+.progress-bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #5a84ff, #72d8ff);
+  transition: width 160ms ease-out;
+}
+
+.progress-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+}
+
 .log-surface {
   min-height: 240px;
   max-height: 360px;

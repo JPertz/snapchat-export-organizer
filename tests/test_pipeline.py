@@ -132,6 +132,38 @@ def test_process_video_sources_from_zip(sample_video_export_zip: Path, tmp_path:
     assert len(tagged_files) == 1
 
 
+def test_process_sources_reports_live_progress(progress_export_dir: Path, tmp_path: Path) -> None:
+    output_dir = tmp_path / "output-progress"
+    progress_updates = []
+
+    stats = process_sources(
+        [progress_export_dir],
+        output_dir,
+        progress=lambda state: progress_updates.append(state),
+    )
+
+    assert stats.errors == []
+    assert progress_updates
+    assert progress_updates[0].phase == "preparing"
+    assert any(item.phase == "loading_metadata" for item in progress_updates)
+    assert any(item.phase == "scanning_media" for item in progress_updates)
+    assert any(item.phase == "processing" and item.total_files == 4 for item in progress_updates)
+    assert any(
+        item.phase == "processing"
+        and item.completed_files == 3
+        and item.files_left == 1
+        and item.estimated_remaining_seconds is not None
+        for item in progress_updates
+    )
+    final_progress = progress_updates[-1]
+    assert final_progress.phase == "completed"
+    assert final_progress.total_files == 4
+    assert final_progress.completed_files == 4
+    assert final_progress.files_left == 0
+    assert final_progress.progress_percent == 100.0
+    assert final_progress.estimated_remaining_seconds is None
+
+
 def test_analyze_sources_from_folder(summary_export_dir: Path) -> None:
     summary = analyze_sources([summary_export_dir])
 

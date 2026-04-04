@@ -33,6 +33,24 @@ class ProcessStats:
 
 
 @dataclass(slots=True)
+class ProcessProgress:
+    phase: str = "idle"
+    total_files: int = 0
+    completed_files: int = 0
+    files_left: int = 0
+    merged_files: int = 0
+    tagged_files: int = 0
+    skipped_files: int = 0
+    error_count: int = 0
+    progress_percent: float = 0.0
+    current_mid: str | None = None
+    current_output_name: str | None = None
+    started_at: str | None = None
+    elapsed_seconds: float = 0.0
+    estimated_remaining_seconds: float | None = None
+
+
+@dataclass(slots=True)
 class MediaSummary:
     zip_count: int = 0
     folder_count: int = 0
