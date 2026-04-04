@@ -17,7 +17,8 @@ class MediaMetadata:
 @dataclass(slots=True)
 class MediaFiles:
     mid: str
-    main_path: Path
+    media_kind: str
+    main_path: Path | None = None
     overlay_path: Path | None = None
 
 
@@ -30,3 +31,11 @@ class ProcessStats:
     skipped_files: int = 0
     errors: list[str] = field(default_factory=list)
 
+
+@dataclass(slots=True)
+class MediaSummary:
+    metadata_records: int = 0
+    total_media: int = 0
+    image_count: int = 0
+    video_count: int = 0
+    errors: list[str] = field(default_factory=list)

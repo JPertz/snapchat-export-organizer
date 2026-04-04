@@ -1,16 +1,16 @@
 # Snapchat Export Organizer
 
-Windows app with a local browser UI for rebuilding Snapchat Memories exports into ready-to-import photos with overlay and EXIF metadata.
+Windows app with a local browser UI for rebuilding Snapchat Memories exports into ready-to-import photos and videos with overlays and metadata.
 
 ## Goal
 
 The app should let a user:
 
 1. select multiple Snapchat export ZIP files and/or extracted export folders
-2. merge `main` images with matching `overlay` images
+2. merge `main` images and videos with matching `overlay` files
 3. read metadata from Snapchat JSON files
-4. write capture date and GPS data into EXIF
-5. export finished JPG files into one clean output folder
+4. write capture date and GPS data into exported media metadata
+5. export finished JPG and MP4 files directly into one clean output folder
 
 This repository contains the source code. End users should later download the ready-made Windows build from **GitHub Releases**, not the source ZIP from the main repository page.
 
@@ -35,7 +35,7 @@ That gives us two good paths:
 2. Add all Snapchat export ZIP files and/or extracted folders.
 3. Choose an output folder.
 4. Start processing.
-5. Receive a folder with finished JPG files.
+5. Receive one folder that fills up with finished JPG and MP4 files while processing runs.
 
 ## Current Project Layout
 

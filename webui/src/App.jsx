@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+const initialSummary = {
+  metadata_records: 0,
+  total_media: 0,
+  image_count: 0,
+  video_count: 0,
+  errors: [],
+};
+
 const initialStats = {
   discovered_metadata: 0,
   discovered_media: 0,
@@ -36,16 +44,6 @@ function dedupePaths(currentPaths, incomingPaths) {
   return merged;
 }
 
-function shortenPath(value, maxLength = 54) {
-  if (!value) {
-    return "Not selected yet";
-  }
-  if (value.length <= maxLength) {
-    return value;
-  }
-  return `...${value.slice(-(maxLength - 3))}`;
-}
-
 async function readJson(url, options) {
   const response = await fetch(url, options);
   if (!response.ok) {
@@ -70,6 +68,8 @@ function App() {
   const [appState, setAppState] = useState(null);
   const [sources, setSources] = useState([]);
   const [outputDir, setOutputDir] = useState("");
+  const [summaryData, setSummaryData] = useState(initialSummary);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [job, setJob] = useState(null);
   const [jobStatus, setJobStatus] = useState("ready");
   const [logLines, setLogLines] = useState([]);
@@ -99,6 +99,46 @@ function App() {
       setErrorMessage(error.message);
     });
   }, []);
+
+  useEffect(() => {
+    if (sources.length === 0) {
+      setSummaryData(initialSummary);
+      setIsAnalyzing(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setIsAnalyzing(true);
+
+    readJson("/api/analysis/summary", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ sources }),
+    })
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        setSummaryData(payload);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setErrorMessage(error.message);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsAnalyzing(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sources]);
 
   useEffect(() => {
     const heartbeat = window.setInterval(() => {
@@ -246,6 +286,7 @@ function App() {
 
   const running = jobStatus === "running";
   const readyToStart = sources.length > 0 && outputDir.trim().length > 0 && !running && !isSubmitting;
+  const summaryErrors = summaryData.errors ?? [];
   const statusLabel =
     jobStatus === "running"
       ? "Processing"
@@ -259,12 +300,10 @@ function App() {
     <div className="page-shell">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-badge">Export Snaps</span>
           <div>
-            <p className="eyebrow">Local browser app</p>
             <h1>Snapchat Export Organizer</h1>
             <p className="subtitle">
-              Merge Snapchat export overlays, rebuild JPG files, and write capture metadata locally on this PC.
+              Merge Snapchat export overlays, rebuild photos and videos, and write capture metadata locally on this PC.
             </p>
           </div>
         </div>
@@ -285,8 +324,8 @@ function App() {
         <aside className="sidebar-card">
           <h2>Summary</h2>
           <div className="metric-tile">
-            <strong>{sources.length}</strong>
-            <span>Selected sources</span>
+            <strong>{summaryData.total_media}</strong>
+            <span>{isAnalyzing ? "Analyzing JSON..." : "Total media from JSON"}</span>
           </div>
           <div className="metric-list">
             <div>
@@ -298,20 +337,29 @@ function App() {
               <strong>{summary.folderCount}</strong>
             </div>
             <div>
-              <span>Output</span>
-              <strong>{outputDir ? "Ready" : "Missing"}</strong>
+              <span>Images</span>
+              <strong>{summaryData.image_count}</strong>
             </div>
-          </div>
-          <div className="info-card">
-            <h3>Current target</h3>
-            <p>{shortenPath(outputDir)}</p>
+            <div>
+              <span>Videos</span>
+              <strong>{summaryData.video_count}</strong>
+            </div>
+            <div>
+              <span>Metadata records</span>
+              <strong>{summaryData.metadata_records}</strong>
+            </div>
           </div>
           <div className="info-card">
             <h3>Last processing result</h3>
             <p>Merged: {stats.merged_files}</p>
             <p>Tagged: {stats.tagged_files}</p>
-            <p>Errors: {stats.error_count}</p>
+              <p>Errors: {stats.error_count}</p>
           </div>
+          {summaryErrors.length > 0 ? (
+            <div className="alert-inline">
+              Summary warnings: {summaryErrors[0]}
+            </div>
+          ) : null}
           <div className="footnote">
             <p>Version {appState?.version ?? "..."}</p>
             <p>{appState?.platform ?? "Windows"} local mode</p>
@@ -324,7 +372,7 @@ function App() {
               <p className="eyebrow">Export Settings</p>
               <h2>Prepare your local Snapchat export</h2>
               <p className="subtitle">
-                Add ZIP archives or extracted folders, choose the output folder, and run everything locally.
+                Add ZIP archives or extracted folders, choose one target folder, and run everything locally.
               </p>
             </div>
             <button
@@ -379,7 +427,7 @@ function App() {
             <div className="panel-header">
               <div>
                 <h3>Output folder</h3>
-                <p>The pipeline creates <code>merged</code> and <code>tagged</code> folders inside this location.</p>
+                <p>Finished files are written directly into this folder while processing runs.</p>
               </div>
               <button className="secondary-button" type="button" onClick={handleSelectOutput} disabled={isSelecting || running}>
                 Browse
@@ -397,16 +445,20 @@ function App() {
 
           <section className="stats-grid">
             <article className="stat-card">
+              <span>Total media</span>
+              <strong>{summaryData.total_media}</strong>
+            </article>
+            <article className="stat-card">
+              <span>Images</span>
+              <strong>{summaryData.image_count}</strong>
+            </article>
+            <article className="stat-card">
+              <span>Videos</span>
+              <strong>{summaryData.video_count}</strong>
+            </article>
+            <article className="stat-card">
               <span>Metadata records</span>
-              <strong>{stats.discovered_metadata}</strong>
-            </article>
-            <article className="stat-card">
-              <span>Media groups</span>
-              <strong>{stats.discovered_media}</strong>
-            </article>
-            <article className="stat-card">
-              <span>Copied without metadata</span>
-              <strong>{stats.skipped_files}</strong>
+              <strong>{summaryData.metadata_records}</strong>
             </article>
           </section>
         </section>

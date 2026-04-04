@@ -55,9 +55,7 @@ code {
 }
 
 .brand {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
+  display: block;
 }
 
 .brand h1,
@@ -68,29 +66,8 @@ code {
   line-height: 1.05;
 }
 
-.brand-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 10px 12px;
-  border-radius: 16px;
-  background: linear-gradient(180deg, #ffd04d, #ffb729);
-  color: #172235;
-  font-weight: 700;
-  font-size: 0.85rem;
-  box-shadow: 0 12px 30px rgba(255, 183, 41, 0.22);
-}
-
-.eyebrow {
-  margin: 0 0 6px;
-  color: #90a0b9;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font-size: 0.72rem;
-}
-
 .subtitle {
-  margin: 10px 0 0;
+  margin: 12px 0 0;
   max-width: 760px;
   color: #aab6ca;
   line-height: 1.55;
@@ -337,7 +314,7 @@ code {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
 }
 

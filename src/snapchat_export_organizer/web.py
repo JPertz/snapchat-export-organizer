@@ -18,8 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .dialogs import select_folder, select_zip_files
-from .models import ProcessStats
-from .pipeline import process_sources
+from .models import MediaSummary, ProcessStats
+from .pipeline import analyze_sources, process_sources
 
 
 def _utc_now() -> str:
@@ -128,6 +128,18 @@ class StatsResponse(BaseModel):
     tagged_files: int
     skipped_files: int
     error_count: int
+    errors: list[str]
+
+
+class SummaryRequest(BaseModel):
+    sources: list[str] = Field(default_factory=list)
+
+
+class MediaSummaryResponse(BaseModel):
+    metadata_records: int
+    total_media: int
+    image_count: int
+    video_count: int
     errors: list[str]
 
 
@@ -280,6 +292,16 @@ def _serialize_stats(stats: ProcessStats | None) -> StatsResponse | None:
     )
 
 
+def _serialize_summary(summary: MediaSummary) -> MediaSummaryResponse:
+    return MediaSummaryResponse(
+        metadata_records=summary.metadata_records,
+        total_media=summary.total_media,
+        image_count=summary.image_count,
+        video_count=summary.video_count,
+        errors=list(summary.errors),
+    )
+
+
 def create_app(launcher_state: LauncherState | None = None) -> FastAPI:
     state = launcher_state or LauncherState()
     jobs = JobManager()
@@ -313,6 +335,14 @@ def create_app(launcher_state: LauncherState | None = None) -> FastAPI:
     @app.post("/api/dialog/select-output", response_model=DialogPathResponse)
     def api_select_output() -> DialogPathResponse:
         return DialogPathResponse(path=select_folder("Select output folder"))
+
+    @app.post("/api/analysis/summary", response_model=MediaSummaryResponse)
+    def api_summary(payload: SummaryRequest) -> MediaSummaryResponse:
+        sources = [item.strip() for item in payload.sources if item.strip()]
+        if not sources:
+            raise HTTPException(status_code=400, detail="Please add at least one ZIP file or folder.")
+        summary = analyze_sources(sources=sources)
+        return _serialize_summary(summary)
 
     @app.post("/api/jobs", response_model=JobCreateResponse, status_code=201)
     def api_create_job(payload: JobCreateRequest) -> JobCreateResponse:

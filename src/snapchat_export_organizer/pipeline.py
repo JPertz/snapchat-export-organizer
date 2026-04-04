@@ -3,23 +3,38 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
 import tempfile
+import time
 import zipfile
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Iterable
+from uuid import uuid4
 
 import piexif
 from PIL import Image, ImageOps
 
-from .models import MediaFiles, MediaMetadata, ProcessStats
+from .models import MediaFiles, MediaMetadata, MediaSummary, ProcessStats
 
 
 StatusCallback = Callable[[str], None]
 
 MID_RE = re.compile(
-    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(main|overlay)\.(jpg|jpeg|png)$",
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(main|overlay)\.([a-z0-9]+)$",
     re.IGNORECASE,
+)
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+MEDIA_TYPE_KEYS = (
+    "Media Type",
+    "MediaType",
+    "media_type",
+    "Type",
+    "type",
+    "Content Type",
+    "content_type",
 )
 
 
@@ -37,8 +52,8 @@ def process_sources(
         if status is not None:
             status(message)
 
-    with tempfile.TemporaryDirectory(prefix="snapchat_export_organizer_") as temp_dir_name:
-        temp_dir = Path(temp_dir_name)
+    temp_dir = _create_temp_work_dir()
+    try:
         log("Preparing inputs...")
         expanded_roots = _expand_sources(source_paths, temp_dir, log)
 
@@ -54,40 +69,87 @@ def process_sources(
         stats.discovered_media = len(media_map)
 
         if not media_map:
-            raise ValueError("No Snapchat memory images were found in the selected inputs.")
-
-        merged_dir = output_root / "merged"
-        final_dir = output_root / "tagged"
-        merged_dir.mkdir(parents=True, exist_ok=True)
-        final_dir.mkdir(parents=True, exist_ok=True)
+            raise ValueError("No Snapchat memory images or videos were found in the selected inputs.")
 
         for media in media_map.values():
-            output_name = _build_output_name(media.mid, metadata_map.get(media.mid))
-            merged_path = merged_dir / output_name
-            final_path = final_dir / output_name
+            output_name = _build_output_name(media, metadata_map.get(media.mid))
+            final_path = output_root / output_name
+            staged_path = temp_dir / f".staging-{media.mid}{_output_extension(media.media_kind)}"
 
             try:
-                _merge_media(media, merged_path)
+                _merge_media(media, staged_path)
                 stats.merged_files += 1
 
                 metadata = metadata_map.get(media.mid)
-                if metadata and metadata.captured_at is not None:
-                    _write_tagged_image(merged_path, final_path, metadata)
+                if metadata and _has_taggable_metadata(metadata):
+                    _write_tagged_media(media.media_kind, staged_path, final_path, metadata)
                     stats.tagged_files += 1
                 else:
-                    shutil.copy2(merged_path, final_path)
+                    if final_path.exists():
+                        final_path.unlink()
+                    staged_path.replace(final_path)
                     stats.skipped_files += 1
             except Exception as exc:
                 stats.errors.append(f"{media.mid}: {exc}")
                 log(f"Error while processing {media.mid}: {exc}")
+            finally:
+                if staged_path.exists():
+                    _delete_with_retries(staged_path)
 
         log(
             "Finished. "
             f"Merged: {stats.merged_files}, tagged: {stats.tagged_files}, "
             f"copied without metadata: {stats.skipped_files}, errors: {len(stats.errors)}"
         )
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
     return stats
+
+
+def analyze_sources(
+    sources: Iterable[str | Path],
+    status: StatusCallback | None = None,
+) -> MediaSummary:
+    summary = MediaSummary()
+    source_paths = [Path(item).expanduser().resolve() for item in sources]
+
+    def log(message: str) -> None:
+        if status is not None:
+            status(message)
+
+    temp_dir = _create_temp_work_dir()
+    try:
+        log("Preparing inputs for JSON analysis...")
+        expanded_roots = _expand_sources(source_paths, temp_dir, log)
+
+        if not expanded_roots:
+            raise ValueError("No readable ZIP files or folders were provided.")
+
+        seen_metadata: set[str] = set()
+        seen_media: set[str] = set()
+
+        log("Scanning JSON files for media summary...")
+        for root in expanded_roots:
+            for json_path in root.rglob("*.json"):
+                try:
+                    with json_path.open("r", encoding="utf-8") as handle:
+                        payload = json.load(handle)
+                except Exception as exc:
+                    summary.errors.append(f"JSON read failed for {json_path}: {exc}")
+                    continue
+
+                _scan_json_summary(payload, seen_metadata, seen_media, summary)
+
+        log(
+            "JSON summary finished. "
+            f"Metadata: {summary.metadata_records}, media: {summary.total_media}, "
+            f"images: {summary.image_count}, videos: {summary.video_count}, errors: {len(summary.errors)}"
+        )
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return summary
 
 
 def _expand_sources(source_paths: list[Path], temp_dir: Path, log: StatusCallback) -> list[Path]:
@@ -134,6 +196,36 @@ def _load_metadata(roots: list[Path], stats: ProcessStats, log: StatusCallback) 
     return metadata_map
 
 
+def _scan_json_summary(
+    obj: object,
+    seen_metadata: set[str],
+    seen_media: set[str],
+    summary: MediaSummary,
+) -> None:
+    if isinstance(obj, dict):
+        maybe_metadata = _extract_metadata_record(obj, Path())
+        if maybe_metadata is not None and maybe_metadata.mid not in seen_metadata:
+            seen_metadata.add(maybe_metadata.mid)
+            summary.metadata_records += 1
+
+        media_key, media_kind = _extract_media_summary_record(obj)
+        if media_key is not None and media_kind is not None and media_key not in seen_media:
+            seen_media.add(media_key)
+            summary.total_media += 1
+            if media_kind == "image":
+                summary.image_count += 1
+            elif media_kind == "video":
+                summary.video_count += 1
+
+        for value in obj.values():
+            _scan_json_summary(value, seen_metadata, seen_media, summary)
+        return
+
+    if isinstance(obj, list):
+        for item in obj:
+            _scan_json_summary(item, seen_metadata, seen_media, summary)
+
+
 def _scan_json(obj: object, source_file: Path, metadata_map: dict[str, MediaMetadata]) -> None:
     if isinstance(obj, dict):
         maybe_metadata = _extract_metadata_record(obj, source_file)
@@ -173,6 +265,23 @@ def _extract_metadata_record(record: dict[str, object], source_file: Path) -> Me
     )
 
 
+def _extract_media_summary_record(record: dict[str, object]) -> tuple[str | None, str | None]:
+    raw_url = (
+        _coerce_text(record.get("Media Download Url"))
+        or _coerce_text(record.get("Download Link"))
+        or _coerce_text(record.get("Download URL"))
+    )
+    raw_mid = _extract_mid_from_text(raw_url) or _extract_mid_from_text(_coerce_text(record.get("Media Id")))
+    explicit_type = next((_coerce_text(record.get(key)) for key in MEDIA_TYPE_KEYS if _coerce_text(record.get(key))), None)
+
+    media_kind = _classify_media_kind(explicit_type, raw_url)
+    if media_kind is None:
+        return None, None
+
+    dedupe_key = raw_mid or raw_url.lower() if raw_url else None
+    return dedupe_key, media_kind
+
+
 def _coerce_text(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
@@ -187,6 +296,24 @@ def _extract_mid_from_text(value: str | None) -> str | None:
         re.IGNORECASE,
     )
     return match.group(1).lower() if match else None
+
+
+def _classify_media_kind(explicit_type: str | None, raw_url: str | None) -> str | None:
+    if explicit_type:
+        lowered = explicit_type.lower()
+        if "video" in lowered:
+            return "video"
+        if any(token in lowered for token in ("image", "photo", "picture", "snap")):
+            return "image"
+
+    if raw_url:
+        suffix = Path(raw_url.split("?", 1)[0]).suffix.lower()
+        if suffix in IMAGE_EXTENSIONS:
+            return "image"
+        if suffix in VIDEO_EXTENSIONS:
+            return "video"
+
+    return None
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -240,19 +367,27 @@ def _find_media(roots: list[Path], stats: ProcessStats) -> dict[str, MediaFiles]
 
             mid = match.group(1).lower()
             kind = match.group(2).lower()
+            media_kind = _classify_file_kind(file_path)
+            if media_kind is None:
+                continue
+
             current = media_map.get(mid)
+            if current is None:
+                current = MediaFiles(mid=mid, media_kind=media_kind)
+                media_map[mid] = current
 
             if kind == "main":
-                media_map[mid] = MediaFiles(mid=mid, main_path=file_path, overlay_path=current.overlay_path if current else None)
-            elif current is not None:
-                current.overlay_path = file_path
+                if current.main_path is not None and current.main_path != file_path:
+                    stats.errors.append(f"{mid}: duplicate main media found, using {file_path.name}")
+                current.main_path = file_path
+                current.media_kind = media_kind
             else:
-                media_map[mid] = MediaFiles(mid=mid, main_path=file_path, overlay_path=file_path)
+                current.overlay_path = file_path
 
     cleaned_map: dict[str, MediaFiles] = {}
     for mid, media in media_map.items():
-        if media.main_path == media.overlay_path and media.overlay_path is not None:
-            stats.errors.append(f"{mid}: overlay found before main image")
+        if media.main_path is None:
+            stats.errors.append(f"{mid}: overlay found without matching main media")
             continue
         cleaned_map[mid] = media
 
@@ -260,35 +395,68 @@ def _find_media(roots: list[Path], stats: ProcessStats) -> dict[str, MediaFiles]
 
 
 def _merge_media(media: MediaFiles, destination: Path) -> None:
-    base_image = Image.open(media.main_path)
-    base_image = ImageOps.exif_transpose(base_image).convert("RGBA")
+    if media.main_path is None:
+        raise ValueError("Main media file is missing.")
 
+    if media.media_kind == "video":
+        _merge_video(media, destination)
+        return
+
+    _merge_image(media, destination)
+
+
+def _merge_image(media: MediaFiles, destination: Path) -> None:
+    with Image.open(media.main_path) as base_handle:
+        base_image = ImageOps.exif_transpose(base_handle).convert("RGBA")
+
+    overlay: Image.Image | None = None
     if media.overlay_path is not None:
-        overlay = Image.open(media.overlay_path).convert("RGBA")
+        with Image.open(media.overlay_path) as overlay_handle:
+            overlay = overlay_handle.convert("RGBA")
         if overlay.size != base_image.size:
             overlay = overlay.resize(base_image.size)
         base_image = Image.alpha_composite(base_image, overlay)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    base_image.convert("RGB").save(destination, "JPEG", quality=95)
+    rgb_image = base_image.convert("RGB")
+    try:
+        rgb_image.save(destination, "JPEG", quality=95)
+    finally:
+        rgb_image.close()
+        base_image.close()
+        if overlay is not None:
+            overlay.close()
+
+
+def _write_tagged_media(
+    media_kind: str,
+    source_path: Path,
+    destination: Path,
+    metadata: MediaMetadata,
+) -> None:
+    if media_kind == "video":
+        _write_tagged_video(source_path, destination, metadata)
+        return
+
+    _write_tagged_image(source_path, destination, metadata)
 
 
 def _write_tagged_image(source_path: Path, destination: Path, metadata: MediaMetadata) -> None:
-    image = Image.open(source_path)
     exif_bytes = _build_exif(metadata)
-    image.save(destination, "JPEG", quality=95, exif=exif_bytes)
+    with Image.open(source_path) as image:
+        image.save(destination, "JPEG", quality=95, exif=exif_bytes)
 
 
 def _build_exif(metadata: MediaMetadata) -> bytes:
-    timestamp = metadata.captured_at.astimezone(timezone.utc).strftime("%Y:%m:%d %H:%M:%S")
-    zeroth: dict[int, object] = {
-        piexif.ImageIFD.DateTime: timestamp,
-    }
-    exif: dict[int, object] = {
-        piexif.ExifIFD.DateTimeOriginal: timestamp,
-        piexif.ExifIFD.DateTimeDigitized: timestamp,
-    }
+    zeroth: dict[int, object] = {}
+    exif: dict[int, object] = {}
     gps: dict[int, object] = {}
+
+    if metadata.captured_at is not None:
+        timestamp = metadata.captured_at.astimezone(timezone.utc).strftime("%Y:%m:%d %H:%M:%S")
+        zeroth[piexif.ImageIFD.DateTime] = timestamp
+        exif[piexif.ExifIFD.DateTimeOriginal] = timestamp
+        exif[piexif.ExifIFD.DateTimeDigitized] = timestamp
 
     if metadata.latitude is not None and metadata.longitude is not None:
         gps[piexif.GPSIFD.GPSLatitudeRef] = "N" if metadata.latitude >= 0 else "S"
@@ -314,9 +482,169 @@ def _to_dms(value: float) -> tuple[tuple[int, int], tuple[int, int], tuple[int, 
     return ((degrees, 1), (minutes, 1), (seconds, 100))
 
 
-def _build_output_name(mid: str, metadata: MediaMetadata | None) -> str:
+def _build_output_name(media: MediaFiles, metadata: MediaMetadata | None) -> str:
     if metadata and metadata.captured_at is not None:
         prefix = metadata.captured_at.astimezone(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
-        return f"{prefix}_{mid}.jpg"
-    return f"{mid}.jpg"
+        return f"{prefix}_{media.mid}{_output_extension(media.media_kind)}"
+    return f"{media.mid}{_output_extension(media.media_kind)}"
 
+
+def _classify_file_kind(file_path: Path) -> str | None:
+    suffix = file_path.suffix.lower()
+    if suffix in IMAGE_EXTENSIONS:
+        return "image"
+    if suffix in VIDEO_EXTENSIONS:
+        return "video"
+    return None
+
+
+def _has_taggable_metadata(metadata: MediaMetadata) -> bool:
+    return metadata.captured_at is not None or (
+        metadata.latitude is not None and metadata.longitude is not None
+    )
+
+
+def _output_extension(media_kind: str) -> str:
+    return ".mp4" if media_kind == "video" else ".jpg"
+
+
+def _create_temp_work_dir(preferred_parent: Path | None = None) -> Path:
+    candidates: list[Path] = []
+    if preferred_parent is not None:
+        candidates.append(preferred_parent)
+    candidates.extend([Path.cwd(), Path.home()])
+
+    for candidate in candidates:
+        try:
+            root = candidate / ".snapchat_export_organizer_work"
+            root.mkdir(parents=True, exist_ok=True)
+            work_dir = root / uuid4().hex
+            work_dir.mkdir(parents=True, exist_ok=False)
+            return work_dir
+        except OSError:
+            continue
+
+    return Path(tempfile.mkdtemp(prefix="snapchat_export_organizer_"))
+
+
+def _delete_with_retries(path: Path, attempts: int = 6, delay_seconds: float = 0.1) -> None:
+    for attempt in range(attempts):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                return
+            time.sleep(delay_seconds)
+
+
+@lru_cache(maxsize=1)
+def _ffmpeg_executable() -> str:
+    ffmpeg_on_path = shutil.which("ffmpeg")
+    if ffmpeg_on_path:
+        return ffmpeg_on_path
+
+    try:
+        import imageio_ffmpeg
+    except ImportError as exc:
+        raise RuntimeError(
+            "Video processing requires ffmpeg. Install the imageio-ffmpeg package or make ffmpeg available on PATH."
+        ) from exc
+
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def _run_ffmpeg(arguments: list[str], error_context: str) -> None:
+    command = [_ffmpeg_executable(), *arguments]
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"{error_context}: {detail or 'ffmpeg failed'}")
+
+
+def _merge_video(media: MediaFiles, destination: Path) -> None:
+    if media.main_path is None:
+        raise ValueError("Main video file is missing.")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    arguments = ["-y", "-i", str(media.main_path)]
+
+    if media.overlay_path is not None:
+        if _classify_file_kind(media.overlay_path) == "image":
+            arguments.extend(["-loop", "1", "-i", str(media.overlay_path)])
+        else:
+            arguments.extend(["-i", str(media.overlay_path)])
+
+        arguments.extend(
+            [
+                "-filter_complex",
+                "[1:v][0:v]scale2ref[overlay][base];[base][overlay]overlay=0:0:format=auto[vout]",
+                "-map",
+                "[vout]",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-shortest",
+                "-movflags",
+                "+faststart",
+                str(destination),
+            ]
+        )
+    else:
+        arguments.extend(
+            [
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-movflags",
+                "+faststart",
+                str(destination),
+            ]
+        )
+
+    _run_ffmpeg(arguments, f"Video merge failed for {media.mid}")
+
+
+def _write_tagged_video(source_path: Path, destination: Path, metadata: MediaMetadata) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    arguments = [
+        "-y",
+        "-i",
+        str(source_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c",
+        "copy",
+    ]
+    arguments.extend(_build_video_metadata_args(metadata))
+    arguments.extend(["-movflags", "+faststart+use_metadata_tags", str(destination)])
+    _run_ffmpeg(arguments, f"Video metadata write failed for {source_path.name}")
+
+
+def _build_video_metadata_args(metadata: MediaMetadata) -> list[str]:
+    arguments: list[str] = []
+
+    if metadata.captured_at is not None:
+        creation_time = metadata.captured_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        arguments.extend(["-metadata", f"creation_time={creation_time}"])
+
+    if metadata.latitude is not None and metadata.longitude is not None:
+        iso6709 = f"{metadata.latitude:+08.4f}{metadata.longitude:+09.4f}/"
+        arguments.extend(["-metadata", f"location={iso6709}"])
+        arguments.extend(["-metadata", f"com.apple.quicktime.location.ISO6709={iso6709}"])
+
+    return arguments

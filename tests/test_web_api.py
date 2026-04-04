@@ -37,6 +37,15 @@ def test_job_creation_requires_sources() -> None:
     assert response.json()["detail"] == "Please add at least one ZIP file or folder."
 
 
+def test_summary_requires_sources() -> None:
+    client = TestClient(create_app(LauncherState(port=8765)))
+
+    response = client.post("/api/analysis/summary", json={"sources": []})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Please add at least one ZIP file or folder."
+
+
 def test_job_creation_requires_output_dir(sample_export_dir: Path) -> None:
     client = TestClient(create_app(LauncherState(port=8765)))
 
@@ -44,6 +53,34 @@ def test_job_creation_requires_output_dir(sample_export_dir: Path) -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Please choose an output folder."
+
+
+def test_summary_endpoint_from_folder(summary_export_dir: Path) -> None:
+    client = TestClient(create_app(LauncherState(port=8765)))
+
+    response = client.post("/api/analysis/summary", json={"sources": [str(summary_export_dir)]})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["metadata_records"] == 4
+    assert payload["total_media"] == 4
+    assert payload["image_count"] == 2
+    assert payload["video_count"] == 2
+    assert len(payload["errors"]) == 1
+
+
+def test_summary_endpoint_from_zip(summary_export_zip: Path) -> None:
+    client = TestClient(create_app(LauncherState(port=8765)))
+
+    response = client.post("/api/analysis/summary", json={"sources": [str(summary_export_zip)]})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["metadata_records"] == 4
+    assert payload["total_media"] == 4
+    assert payload["image_count"] == 2
+    assert payload["video_count"] == 2
+    assert len(payload["errors"]) == 1
 
 
 def test_job_lifecycle_and_event_endpoint(sample_export_dir: Path, tmp_path: Path) -> None:
@@ -67,3 +104,4 @@ def test_job_lifecycle_and_event_endpoint(sample_export_dir: Path, tmp_path: Pat
     assert payload["status"] == "completed"
     assert payload["stats"]["merged_files"] == 1
     assert payload["stats"]["tagged_files"] == 1
+    assert len(list(output_dir.glob("*.jpg"))) == 1
