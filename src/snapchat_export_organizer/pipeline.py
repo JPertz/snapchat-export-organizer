@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import logging
+import os
 import re
 import shutil
 import subprocess
@@ -23,6 +25,7 @@ from .models import MediaFiles, MediaMetadata, MediaSummary, ProcessProgress, Pr
 
 StatusCallback = Callable[[str], None]
 ProgressCallback = Callable[[ProcessProgress], None]
+LOGGER = logging.getLogger(__name__)
 
 MID_RE = re.compile(
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(main|overlay)\.([a-z0-9]+)$",
@@ -30,6 +33,12 @@ MID_RE = re.compile(
 )
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+APP_TEMP_ROOT_NAME = "snapchat_export_organizer"
+APP_TEMP_JOBS_DIRNAME = "jobs"
+APP_LOCK_FILENAME = "instance.lock"
+OUTPUT_STAGE_SUFFIX = ".seo.part"
+VIDEO_STAGE_MARKER = ".seo-stage"
+ALREADY_RUNNING_MESSAGE = "Another Snapchat Export Organizer process is already running."
 MEDIA_TYPE_KEYS = (
     "Media Type",
     "MediaType",
@@ -45,6 +54,24 @@ MEDIA_TYPE_KEYS = (
 class MediaInventory:
     media_map: dict[str, MediaFiles] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class AppInstanceLock:
+    path: Path
+    released: bool = False
+
+    def release(self) -> None:
+        if self.released:
+            return
+        _delete_with_retries(self.path)
+        self.released = True
+
+    def __enter__(self) -> AppInstanceLock:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.release()
 
 
 def process_sources(
@@ -111,6 +138,7 @@ def process_sources(
 
     refresh_progress(phase="preparing")
 
+    _cleanup_output_stage_files(output_root, status=status)
     temp_dir = _create_temp_work_dir()
     try:
         try:
@@ -139,30 +167,34 @@ def process_sources(
             for media in media_map.values():
                 output_name = _build_output_name(media, metadata_map.get(media.mid))
                 final_path = output_root / output_name
-                staged_path = temp_dir / f".staging-{media.mid}{_output_extension(media.media_kind)}"
+                output_stage_path = _build_output_stage_path(final_path, media.media_kind)
+                work_path = temp_dir / f".work-{media.mid}{_output_extension(media.media_kind)}"
                 refresh_progress(phase="processing", current_mid=media.mid, current_output_name=output_name)
 
                 try:
-                    _merge_media(media, staged_path)
+                    _delete_with_retries(work_path)
+                    _delete_with_retries(output_stage_path)
+
+                    _merge_media(media, work_path)
                     stats.merged_files += 1
 
                     metadata = metadata_map.get(media.mid)
                     if metadata and _has_taggable_metadata(metadata):
-                        _write_tagged_media(media.media_kind, staged_path, final_path, metadata)
+                        _write_tagged_media(media.media_kind, work_path, output_stage_path, metadata)
                         stats.tagged_files += 1
                     else:
-                        if final_path.exists():
-                            final_path.unlink()
-                        staged_path.replace(final_path)
+                        _copy_to_output_stage(work_path, output_stage_path)
                         stats.skipped_files += 1
+
+                    _finalize_output_stage(output_stage_path, final_path)
                 except Exception as exc:
                     stats.errors.append(f"{media.mid}: {exc}")
                     log(f"Error while processing {media.mid}: {exc}")
                 finally:
                     progress_state.completed_files += 1
                     refresh_progress(phase="processing", current_mid=media.mid, current_output_name=output_name)
-                    if staged_path.exists():
-                        _delete_with_retries(staged_path)
+                    _cleanup_file(work_path, status=status, description="temporary work file")
+                    _cleanup_file(output_stage_path, status=status, description="temporary output stage file")
 
             refresh_progress(phase="completed")
             log(
@@ -174,7 +206,7 @@ def process_sources(
             refresh_progress(phase="failed")
             raise
     finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        _cleanup_temp_workspace(temp_dir, status=status)
 
     return stats
 
@@ -238,7 +270,7 @@ def analyze_sources(
             f"orphan: {summary.orphan_media_files}, errors: {len(summary.errors)}"
         )
     finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        _cleanup_temp_workspace(temp_dir, status=status)
 
     return summary
 
@@ -635,16 +667,55 @@ def _output_extension(media_kind: str) -> str:
     return ".mp4" if media_kind == "video" else ".jpg"
 
 
+def acquire_app_instance_lock(status: StatusCallback | None = None) -> AppInstanceLock:
+    lock_path = _instance_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": os.getpid(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    while True:
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            metadata = _read_instance_lock_metadata(lock_path)
+            lock_pid = int(metadata.get("pid", 0)) if metadata is not None else 0
+            if lock_pid and _is_process_active(lock_pid):
+                raise RuntimeError(ALREADY_RUNNING_MESSAGE)
+            if not _delete_with_retries(lock_path):
+                raise RuntimeError(ALREADY_RUNNING_MESSAGE)
+            _report_cleanup_warning(f"Removed stale instance lock: {lock_path}", status=status)
+            continue
+
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+
+        return AppInstanceLock(path=lock_path)
+
+
+def cleanup_stale_app_temp_data(status: StatusCallback | None = None) -> None:
+    jobs_root = _job_temp_root()
+    if not jobs_root.exists():
+        return
+
+    for path in jobs_root.iterdir():
+        if path.is_dir():
+            if not _delete_tree_with_retries(path):
+                _report_cleanup_warning(f"Could not delete stale temp workspace: {path}", status=status)
+        else:
+            if not _delete_with_retries(path):
+                _report_cleanup_warning(f"Could not delete stale temp file: {path}", status=status)
+
+    _try_remove_empty_dir(jobs_root)
+    _try_remove_empty_dir(_app_temp_root())
+
+
 def _create_temp_work_dir(preferred_parent: Path | None = None) -> Path:
     candidates: list[Path] = []
     if preferred_parent is not None:
-        candidates.append(preferred_parent / ".snapchat_export_organizer_work")
-    candidates.extend(
-        [
-            Path(tempfile.gettempdir()) / "snapchat_export_organizer_work",
-            Path.home() / ".snapchat_export_organizer_work",
-        ]
-    )
+        candidates.append(preferred_parent)
+    candidates.append(_job_temp_root())
 
     for candidate in candidates:
         try:
@@ -655,18 +726,133 @@ def _create_temp_work_dir(preferred_parent: Path | None = None) -> Path:
         except OSError:
             continue
 
-    return Path(tempfile.mkdtemp(prefix="snapchat_export_organizer_"))
+    return Path(tempfile.mkdtemp(prefix=f"{APP_TEMP_ROOT_NAME}_", dir=tempfile.gettempdir()))
 
 
-def _delete_with_retries(path: Path, attempts: int = 6, delay_seconds: float = 0.1) -> None:
+def _delete_with_retries(path: Path, attempts: int = 6, delay_seconds: float = 0.1) -> bool:
     for attempt in range(attempts):
         try:
             path.unlink(missing_ok=True)
-            return
+            return True
         except PermissionError:
             if attempt == attempts - 1:
-                return
+                return False
             time.sleep(delay_seconds)
+        except OSError:
+            if attempt == attempts - 1:
+                return False
+            time.sleep(delay_seconds)
+    return not path.exists()
+
+
+def _delete_tree_with_retries(path: Path, attempts: int = 6, delay_seconds: float = 0.2) -> bool:
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path, ignore_errors=False)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            if attempt == attempts - 1:
+                return False
+            time.sleep(delay_seconds)
+    return not path.exists()
+
+
+def _copy_to_output_stage(source_path: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source_path, destination)
+
+
+def _build_output_stage_path(final_path: Path, media_kind: str) -> Path:
+    if media_kind == "video":
+        return final_path.with_name(f"{final_path.stem}{VIDEO_STAGE_MARKER}{final_path.suffix}")
+    return final_path.with_name(f"{final_path.name}{OUTPUT_STAGE_SUFFIX}")
+
+
+def _cleanup_output_stage_files(output_root: Path, status: StatusCallback | None = None) -> None:
+    if not output_root.exists():
+        return
+
+    for path in output_root.iterdir():
+        if not path.is_file() or not _is_output_stage_path(path):
+            continue
+        if not _delete_with_retries(path):
+            _report_cleanup_warning(f"Could not delete stale output stage file: {path}", status=status)
+
+
+def _is_output_stage_path(path: Path) -> bool:
+    if path.name.endswith(OUTPUT_STAGE_SUFFIX):
+        return True
+
+    suffix = path.suffix.lower()
+    return suffix in VIDEO_EXTENSIONS and VIDEO_STAGE_MARKER in path.stem
+
+
+def _finalize_output_stage(stage_path: Path, final_path: Path) -> None:
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(stage_path, final_path)
+
+
+def _app_temp_root() -> Path:
+    return Path(tempfile.gettempdir()) / APP_TEMP_ROOT_NAME
+
+
+def _job_temp_root() -> Path:
+    return _app_temp_root() / APP_TEMP_JOBS_DIRNAME
+
+
+def _instance_lock_path() -> Path:
+    return _app_temp_root() / APP_LOCK_FILENAME
+
+
+def _report_cleanup_warning(message: str, status: StatusCallback | None = None) -> None:
+    LOGGER.warning(message)
+    if status is not None:
+        status(message)
+
+
+def _try_remove_empty_dir(path: Path) -> None:
+    try:
+        path.rmdir()
+    except OSError:
+        pass
+
+
+def _cleanup_file(path: Path, status: StatusCallback | None = None, description: str = "temporary file") -> None:
+    if not path.exists():
+        return
+    if not _delete_with_retries(path):
+        _report_cleanup_warning(f"Could not delete {description}: {path}", status=status)
+
+
+def _cleanup_temp_workspace(path: Path, status: StatusCallback | None = None) -> None:
+    if not path.exists():
+        return
+    if not _delete_tree_with_retries(path):
+        _report_cleanup_warning(f"Could not delete temp workspace: {path}", status=status)
+
+
+def _read_instance_lock_metadata(lock_path: Path) -> dict[str, object] | None:
+    try:
+        return json.loads(lock_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _is_process_active(pid: int) -> bool:
+    if pid <= 0:
+        return False
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 @lru_cache(maxsize=1)

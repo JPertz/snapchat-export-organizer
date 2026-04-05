@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import sys
 import threading
 import time
 import urllib.error
@@ -10,6 +11,7 @@ import webbrowser
 import uvicorn
 
 from .dialogs import NativeDialogService
+from .pipeline import acquire_app_instance_lock, cleanup_stale_app_temp_data
 from .web import LauncherState, create_app
 
 
@@ -32,43 +34,60 @@ def _wait_for_server(url: str, timeout_seconds: float = 15.0) -> None:
 
 
 def run() -> None:
-    port = _find_free_port()
-    launcher_state = LauncherState(port=port)
-    dialog_service = NativeDialogService()
-    app = create_app(launcher_state, dialog_provider=dialog_service)
-
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-    server = uvicorn.Server(config)
-    server.install_signal_handlers = lambda: None
-
-    server_thread = threading.Thread(target=server.run, daemon=True, name="snapchat-export-organizer-server")
-    server_thread.start()
-
     try:
-        app_url = f"http://127.0.0.1:{port}"
-        _wait_for_server(app_url)
-        webbrowser.open(app_url, new=1)
+        with acquire_app_instance_lock():
+            port = _find_free_port()
+            cleanup_stale_app_temp_data()
+            launcher_state = LauncherState(port=port)
+            dialog_service = NativeDialogService()
+            app = create_app(launcher_state, dialog_provider=dialog_service)
 
-        started_at = time.monotonic()
-        while server_thread.is_alive():
-            dialog_service.pump_events(timeout_seconds=0.1)
-            if launcher_state.shutdown_requested.is_set():
+            config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+            server = uvicorn.Server(config)
+            server.install_signal_handlers = lambda: None
+
+            server_thread = threading.Thread(target=server.run, daemon=True, name="snapchat-export-organizer-server")
+            server_thread.start()
+
+            try:
+                app_url = f"http://127.0.0.1:{port}"
+                _wait_for_server(app_url)
+                webbrowser.open(app_url, new=1)
+
+                started_at = time.monotonic()
+                while server_thread.is_alive():
+                    dialog_service.pump_events(timeout_seconds=0.1)
+                    if launcher_state.shutdown_requested.is_set():
+                        server.should_exit = True
+
+                    idle_seconds = launcher_state.seconds_since_last_heartbeat()
+                    if launcher_state.heartbeat_seen.is_set():
+                        if idle_seconds is not None and idle_seconds > launcher_state.heartbeat_timeout_seconds:
+                            server.should_exit = True
+                    elif time.monotonic() - started_at > launcher_state.startup_grace_seconds:
+                        server.should_exit = True
+
+                    if server.should_exit:
+                        break
+
+                    time.sleep(0.1)
+            except KeyboardInterrupt:
                 server.should_exit = True
-
-            idle_seconds = launcher_state.seconds_since_last_heartbeat()
-            if launcher_state.heartbeat_seen.is_set():
-                if idle_seconds is not None and idle_seconds > launcher_state.heartbeat_timeout_seconds:
-                    server.should_exit = True
-            elif time.monotonic() - started_at > launcher_state.startup_grace_seconds:
+            finally:
                 server.should_exit = True
+                dialog_service.close()
+                server_thread.join(timeout=15.0)
+    except RuntimeError as exc:
+        _show_startup_error(str(exc))
 
-            if server.should_exit:
-                break
 
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        server.should_exit = True
-    finally:
-        server.should_exit = True
-        dialog_service.close()
-        server_thread.join(timeout=15.0)
+def _show_startup_error(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, message, "Snapchat Export Organizer", 0x10)
+    except Exception:
+        pass

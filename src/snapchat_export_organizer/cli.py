@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from .pipeline import process_sources
+from .pipeline import acquire_app_instance_lock, cleanup_stale_app_temp_data, process_sources
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Process Snapchat export ZIP files and folders into merged, EXIF-tagged JPG files."
+        description="Process Snapchat export ZIP files and folders into merged, metadata-tagged JPG and MP4 files."
     )
     parser.add_argument(
         "sources",
@@ -18,15 +19,21 @@ def main() -> None:
     parser.add_argument(
         "--output",
         required=True,
-        help="Output folder for merged and tagged images",
+        help="Output folder for merged and tagged media",
     )
     args = parser.parse_args()
 
-    stats = process_sources(
-        sources=args.sources,
-        output_dir=Path(args.output),
-        status=lambda message: print(message, flush=True),
-    )
+    try:
+        with acquire_app_instance_lock(status=lambda message: print(message, flush=True)):
+            cleanup_stale_app_temp_data(status=lambda message: print(message, flush=True))
+            stats = process_sources(
+                sources=args.sources,
+                output_dir=Path(args.output),
+                status=lambda message: print(message, flush=True),
+            )
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr, flush=True)
+        raise SystemExit(1) from exc
 
     print("")
     print("Summary")
@@ -40,4 +47,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

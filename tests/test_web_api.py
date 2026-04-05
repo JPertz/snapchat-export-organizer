@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -249,3 +250,46 @@ def test_job_events_include_progress_updates(progress_export_dir: Path, tmp_path
     assert payload["progress"]["total_files"] == 4
     assert payload["progress"]["completed_files"] == 4
     assert payload["progress"]["files_left"] == 0
+
+
+def test_job_creation_blocks_parallel_jobs(sample_export_dir: Path, tmp_path: Path, monkeypatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_process_sources(*, sources, output_dir, status=None, progress=None):
+        started.set()
+        release.wait(timeout=5.0)
+        return type(
+            "Stats",
+            (),
+            {
+                "discovered_metadata": 1,
+                "discovered_media": 1,
+                "merged_files": 1,
+                "tagged_files": 1,
+                "skipped_files": 0,
+                "errors": [],
+            },
+        )()
+
+    monkeypatch.setattr("snapchat_export_organizer.web.process_sources", blocking_process_sources)
+    client = TestClient(create_app(LauncherState(port=8765)))
+    output_dir = tmp_path / "output-parallel-block"
+
+    first_response = client.post(
+        "/api/jobs",
+        json={"sources": [str(sample_export_dir)], "output_dir": str(output_dir)},
+    )
+
+    assert first_response.status_code == 201
+    assert started.wait(timeout=2.0) is True
+
+    second_response = client.post(
+        "/api/jobs",
+        json={"sources": [str(sample_export_dir)], "output_dir": str(output_dir)},
+    )
+
+    assert second_response.status_code == 409
+    assert second_response.json()["detail"] == "Another job is already running."
+
+    release.set()

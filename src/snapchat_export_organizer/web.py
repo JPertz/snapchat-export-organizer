@@ -226,9 +226,13 @@ class JobManager:
         self._current_job_id: str | None = None
 
     def create_job(self, *, sources: list[str], output_dir: str) -> JobRecord:
-        job = JobRecord(job_id=uuid.uuid4().hex, sources=sources, output_dir=output_dir)
-        self._record_event(job, event_type="queued", payload={"status": job.status})
         with self._lock:
+            if self._current_job_id is not None:
+                current_job = self._jobs.get(self._current_job_id)
+                if current_job is not None and current_job.status in {"queued", "running"}:
+                    raise RuntimeError("Another job is already running.")
+            job = JobRecord(job_id=uuid.uuid4().hex, sources=sources, output_dir=output_dir)
+            self._record_event(job, event_type="queued", payload={"status": job.status})
             self._jobs[job.job_id] = job
             self._current_job_id = job.job_id
         worker = threading.Thread(target=self._run_job, args=(job,), daemon=True, name=f"job-{job.job_id[:8]}")
@@ -448,7 +452,10 @@ def create_app(
         if not output_dir:
             raise HTTPException(status_code=400, detail="Please choose an output folder.")
 
-        job = jobs.create_job(sources=sources, output_dir=output_dir)
+        try:
+            job = jobs.create_job(sources=sources, output_dir=output_dir)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return JobCreateResponse(job_id=job.job_id)
 
     @app.get("/api/jobs/{job_id}", response_model=JobResponse)

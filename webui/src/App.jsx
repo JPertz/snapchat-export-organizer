@@ -434,7 +434,7 @@ function App() {
           <div>
             <h1>Snapchat Export Organizer</h1>
             <p className="subtitle">
-              Merge Snapchat export overlays, rebuild photos and videos, and write capture metadata locally on this PC.
+              Merge Snapchat export overlays, rebuild photos and videos, and write capture metadata locally on this PC without storing media in the app folder.
             </p>
           </div>
         </div>
@@ -499,6 +499,8 @@ function App() {
           <div className="footnote">
             <p>{scanStatusLabel}</p>
             <p>Media counts exclude JSON files, folders, and other non-media export items.</p>
+            <p>Temporary work files are cleaned up automatically.</p>
+            <p>Only one app instance can process media at a time.</p>
           </div>
           {summaryErrors.length > 0 ? (
             <div className="alert-inline">
@@ -522,7 +524,7 @@ function App() {
               <p className="eyebrow">Export Settings</p>
               <h2>Prepare your local Snapchat export</h2>
               <p className="subtitle">
-                Add ZIP archives or extracted folders, choose one target folder, and run everything locally.
+                Add ZIP archives or extracted folders, choose one target folder, and keep temporary work files out of the project folder.
               </p>
             </div>
             <button
@@ -596,7 +598,7 @@ function App() {
             <div className="panel-header">
               <div>
                 <h3>Output folder</h3>
-                <p>Finished files are written directly into this folder while processing runs.</p>
+                <p>Finished files stay here. ZIP contents are unpacked only in temporary system storage and cleaned up afterwards.</p>
               </div>
               <button
                 className="secondary-button"

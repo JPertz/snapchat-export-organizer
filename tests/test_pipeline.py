@@ -1,15 +1,26 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 
 import imageio_ffmpeg
 import piexif
+import pytest
 from PIL import Image
 
-from snapchat_export_organizer.pipeline import analyze_sources, process_sources
+import snapchat_export_organizer.pipeline as pipeline
+from snapchat_export_organizer.pipeline import (
+    ALREADY_RUNNING_MESSAGE,
+    acquire_app_instance_lock,
+    analyze_sources,
+    cleanup_stale_app_temp_data,
+    process_sources,
+)
 
 
 def _assert_outputs(output_dir: Path) -> None:
@@ -74,6 +85,7 @@ def test_process_sources_from_folder(sample_export_dir: Path, tmp_path: Path) ->
     assert stats.skipped_files == 0
     assert stats.errors == []
     _assert_outputs(output_dir)
+    assert list(output_dir.glob("*.seo.part")) == []
 
 
 def test_process_sources_from_zip(sample_export_zip: Path, tmp_path: Path) -> None:
@@ -88,6 +100,7 @@ def test_process_sources_from_zip(sample_export_zip: Path, tmp_path: Path) -> No
     assert stats.skipped_files == 0
     assert stats.errors == []
     _assert_outputs(output_dir)
+    assert list(output_dir.glob("*.seo.part")) == []
 
 
 def test_process_video_sources_from_folder(sample_video_export_dir: Path, tmp_path: Path) -> None:
@@ -114,6 +127,7 @@ def test_process_video_sources_from_folder(sample_video_export_dir: Path, tmp_pa
     assert "creation_time" in metadata_dump
     assert "2024-03-04T05:06:07" in metadata_dump
     assert "+52.5200+013.4050/" in metadata_dump
+    assert list(output_dir.glob("*.seo.part")) == []
 
 
 def test_process_video_sources_from_zip(sample_video_export_zip: Path, tmp_path: Path) -> None:
@@ -130,6 +144,7 @@ def test_process_video_sources_from_zip(sample_video_export_zip: Path, tmp_path:
 
     tagged_files = list(output_dir.glob("*.mp4"))
     assert len(tagged_files) == 1
+    assert list(output_dir.glob("*.seo.part")) == []
 
 
 def test_process_sources_reports_live_progress(progress_export_dir: Path, tmp_path: Path) -> None:
@@ -162,6 +177,143 @@ def test_process_sources_reports_live_progress(progress_export_dir: Path, tmp_pa
     assert final_progress.files_left == 0
     assert final_progress.progress_percent == 100.0
     assert final_progress.estimated_remaining_seconds is None
+
+
+def test_process_sources_uses_system_temp_and_cleans_workspace(
+    sample_export_zip: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_temp_root = tmp_path / "system-temp"
+    output_dir = tmp_path / "output-system-temp"
+
+    monkeypatch.setattr(pipeline.tempfile, "gettempdir", lambda: str(fake_temp_root))
+
+    stats = process_sources([sample_export_zip], output_dir)
+
+    assert stats.errors == []
+    jobs_root = fake_temp_root / "snapchat_export_organizer" / "jobs"
+    assert jobs_root == fake_temp_root / "snapchat_export_organizer" / "jobs"
+    assert not jobs_root.exists() or list(jobs_root.iterdir()) == []
+    assert list(output_dir.glob("*.seo.part")) == []
+
+
+def test_process_sources_removes_stale_output_stage_files(sample_export_dir: Path, tmp_path: Path) -> None:
+    output_dir = tmp_path / "output-stale-stage"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stale_stage = output_dir / "old-file.jpg.seo.part"
+    stale_stage.write_bytes(b"stale")
+
+    stats = process_sources([sample_export_dir], output_dir)
+
+    assert stats.errors == []
+    assert stale_stage.exists() is False
+    assert list(output_dir.glob("*.seo.part")) == []
+
+
+def test_process_sources_cleans_failed_output_stage_files(sample_export_dir: Path, tmp_path: Path, monkeypatch) -> None:
+    output_dir = tmp_path / "output-cleanup-on-error"
+
+    def failing_write(media_kind: str, source_path: Path, destination: Path, metadata) -> None:
+        destination.write_bytes(b"partial-output")
+        raise RuntimeError("metadata write exploded")
+
+    monkeypatch.setattr(pipeline, "_write_tagged_media", failing_write)
+
+    stats = process_sources([sample_export_dir], output_dir)
+
+    assert len(stats.errors) == 1
+    assert "metadata write exploded" in stats.errors[0]
+    assert list(output_dir.glob("*.seo.part")) == []
+
+
+def test_cleanup_stale_app_temp_data_removes_old_workspaces(tmp_path: Path, monkeypatch) -> None:
+    fake_temp_root = tmp_path / "system-temp"
+    stale_workspace = fake_temp_root / "snapchat_export_organizer" / "jobs" / "old-job"
+    stale_workspace.mkdir(parents=True, exist_ok=True)
+    (stale_workspace / "artifact.tmp").write_text("stale", encoding="utf-8")
+
+    monkeypatch.setattr(pipeline.tempfile, "gettempdir", lambda: str(fake_temp_root))
+
+    cleanup_stale_app_temp_data()
+
+    assert stale_workspace.exists() is False
+    jobs_root = fake_temp_root / "snapchat_export_organizer" / "jobs"
+    assert jobs_root.exists() is False or list(jobs_root.iterdir()) == []
+
+
+def test_create_temp_work_dir_never_uses_repo_or_home(tmp_path: Path, monkeypatch) -> None:
+    fake_temp_root = tmp_path / "system-temp"
+    monkeypatch.setattr(pipeline.tempfile, "gettempdir", lambda: str(fake_temp_root))
+
+    work_dir = pipeline._create_temp_work_dir()
+    try:
+        expected_root = fake_temp_root / "snapchat_export_organizer" / "jobs"
+        assert expected_root in work_dir.parents
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_build_output_stage_path_keeps_valid_video_extension(tmp_path: Path) -> None:
+    final_path = tmp_path / "movie.mp4"
+
+    stage_path = pipeline._build_output_stage_path(final_path, "video")
+
+    assert stage_path.name == "movie.seo-stage.mp4"
+    assert stage_path.suffix == ".mp4"
+
+
+def test_build_output_stage_path_marks_image_stage_files(tmp_path: Path) -> None:
+    final_path = tmp_path / "photo.jpg"
+
+    stage_path = pipeline._build_output_stage_path(final_path, "image")
+
+    assert stage_path.name == "photo.jpg.seo.part"
+
+
+def test_acquire_app_instance_lock_blocks_second_start(tmp_path: Path, monkeypatch) -> None:
+    fake_temp_root = Path(tempfile.mkdtemp(prefix="seo-lock-test-"))
+    lock_path = fake_temp_root / "snapchat_export_organizer" / "instance.lock"
+
+    monkeypatch.setattr(pipeline, "_instance_lock_path", lambda: lock_path)
+    monkeypatch.setattr(pipeline.os, "open", lambda path, flags: (_ for _ in ()).throw(FileExistsError()))
+    monkeypatch.setattr(pipeline, "_read_instance_lock_metadata", lambda path: {"pid": os.getpid()})
+    monkeypatch.setattr(pipeline, "_is_process_active", lambda pid: True)
+
+    with pytest.raises(RuntimeError, match=ALREADY_RUNNING_MESSAGE):
+        acquire_app_instance_lock()
+
+
+def test_acquire_app_instance_lock_removes_stale_lock(tmp_path: Path, monkeypatch) -> None:
+    fake_temp_root = Path(tempfile.mkdtemp(prefix="seo-lock-test-"))
+    lock_path = fake_temp_root / "snapchat_export_organizer" / "instance.lock"
+    open_calls = {"count": 0}
+    real_os_open = os.open
+    acquired_lock_path = fake_temp_root / "acquired-instance.lock"
+
+    def fake_open(path, flags):
+        open_calls["count"] += 1
+        if open_calls["count"] == 1:
+            raise FileExistsError()
+        return real_os_open(acquired_lock_path, flags)
+
+    monkeypatch.setattr(pipeline, "_instance_lock_path", lambda: lock_path)
+    monkeypatch.setattr(pipeline.os, "open", fake_open)
+    monkeypatch.setattr(pipeline, "_read_instance_lock_metadata", lambda path: {"pid": 999999})
+    monkeypatch.setattr(pipeline, "_is_process_active", lambda pid: False)
+    deleted = {"called": False}
+
+    def fake_delete(path, attempts=6, delay_seconds=0.1):
+        deleted["called"] = True
+        return True
+
+    monkeypatch.setattr(pipeline, "_delete_with_retries", fake_delete)
+
+    lock = acquire_app_instance_lock()
+    assert lock.path == lock_path
+    assert deleted["called"] is True
+    lock.release()
+    acquired_lock_path.unlink(missing_ok=True)
 
 
 def test_analyze_sources_from_folder(summary_export_dir: Path) -> None:

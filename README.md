@@ -77,6 +77,37 @@ python -m snapchat_export_organizer.app
 
 That starts the local FastAPI server, opens the default browser on `http://127.0.0.1:<port>`, and keeps all processing on the user's machine.
 
+During processing, the app unpacks ZIP inputs only into an app-owned directory under the system temp folder. Finished JPG and MP4 files are staged in the chosen output folder and then atomically renamed into place. The app does not intentionally store Snapchat media inside the repository or in persistent app data folders. Only one app or CLI instance is allowed to run at a time.
+
+## CLI Usage
+
+The processing pipeline can also run without the browser UI:
+
+```powershell
+.venv\Scripts\Activate.ps1
+python -m pip install -e .
+python -m snapchat_export_organizer.cli "C:\path\to\export.zip" --output "C:\path\to\output"
+```
+
+You can also use the installed console entry points:
+
+```powershell
+snapchat-export-organizer-app
+snapchat-export-organizer "C:\path\to\export.zip" --output "C:\path\to\output"
+```
+
+The CLI writes finished JPG and MP4 files into the selected output folder. Just like the browser app, it uses only system-temp workspaces for temporary media handling and blocks parallel runs.
+
+## Testing
+
+For local test runs, install the development extras once:
+
+```powershell
+.venv\Scripts\Activate.ps1
+python -m pip install -e .[dev]
+python -m pytest tests\test_pipeline.py tests\test_web_api.py -q
+```
+
 For frontend development with the Vite dev server:
 
 ```powershell
