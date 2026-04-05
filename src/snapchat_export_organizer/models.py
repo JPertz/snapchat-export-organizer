@@ -54,6 +54,7 @@ class ProcessProgress:
 class MediaSummary:
     zip_count: int = 0
     folder_count: int = 0
+    source_item_count: int = 0
     metadata_records: int = 0
     total_media: int = 0
     image_count: int = 0

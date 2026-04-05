@@ -195,6 +195,7 @@ def analyze_sources(
         log("Preparing inputs for JSON analysis...")
         expanded_roots = _expand_sources(source_paths, temp_dir, log)
         _summarize_source_inputs(source_paths, summary)
+        summary.source_item_count = _count_source_items(expanded_roots)
 
         if not expanded_roots:
             raise ValueError("No readable ZIP files or folders were provided.")
@@ -468,6 +469,10 @@ def _summarize_source_inputs(source_paths: list[Path], summary: MediaSummary) ->
             summary.folder_count += 1
 
 
+def _count_source_items(roots: list[Path]) -> int:
+    return sum(1 for root in roots for _ in root.rglob("*"))
+
+
 def _find_media(roots: list[Path], stats: ProcessStats) -> dict[str, MediaFiles]:
     inventory = _scan_media_inventory(roots)
     stats.errors.extend(inventory.warnings)
@@ -633,14 +638,18 @@ def _output_extension(media_kind: str) -> str:
 def _create_temp_work_dir(preferred_parent: Path | None = None) -> Path:
     candidates: list[Path] = []
     if preferred_parent is not None:
-        candidates.append(preferred_parent)
-    candidates.extend([Path.cwd(), Path.home()])
+        candidates.append(preferred_parent / ".snapchat_export_organizer_work")
+    candidates.extend(
+        [
+            Path(tempfile.gettempdir()) / "snapchat_export_organizer_work",
+            Path.home() / ".snapchat_export_organizer_work",
+        ]
+    )
 
     for candidate in candidates:
         try:
-            root = candidate / ".snapchat_export_organizer_work"
-            root.mkdir(parents=True, exist_ok=True)
-            work_dir = root / uuid4().hex
+            candidate.mkdir(parents=True, exist_ok=True)
+            work_dir = candidate / uuid4().hex
             work_dir.mkdir(parents=True, exist_ok=False)
             return work_dir
         except OSError:

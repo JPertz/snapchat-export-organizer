@@ -12,9 +12,16 @@ dist/
 *.exe
 .pytest_cache/
 .pytest_tmp/
+.pytest_tmp_*/
 .mypy_cache/
 .ruff_cache/
 pytest-cache-files-*/
 *.egg-info/
 webui/node_modules/
 src/snapchat_export_organizer/web_static/
+.snapchat_export_organizer_work/
+.manual_*/
+.single_output_*/
+.validation_summary_scan/
+.app-start*.log
+Screenshot *.png

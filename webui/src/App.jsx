@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 const initialSummary = {
   zip_count: 0,
   folder_count: 0,
+  source_item_count: 0,
   metadata_records: 0,
   total_media: 0,
   image_count: 0,
@@ -455,9 +456,13 @@ function App() {
           <h2>Summary</h2>
           <div className="metric-tile">
             <strong>{summaryData.total_media}</strong>
-            <span>{scanStatusLabel}</span>
+            <span>Processable Snapchat media</span>
           </div>
           <div className="metric-list">
+            <div>
+              <span>Input items</span>
+              <strong>{summaryData.source_item_count}</strong>
+            </div>
             <div>
               <span>ZIP files</span>
               <strong>{summaryData.zip_count}</strong>
@@ -490,6 +495,10 @@ function App() {
             <p>Matched media: {summaryData.matched_media_files}</p>
             <p>Missing media: {summaryData.missing_media_files}</p>
             <p>Orphan files: {summaryData.orphan_media_files}</p>
+          </div>
+          <div className="footnote">
+            <p>{scanStatusLabel}</p>
+            <p>Media counts exclude JSON files, folders, and other non-media export items.</p>
           </div>
           {summaryErrors.length > 0 ? (
             <div className="alert-inline">

@@ -141,6 +141,7 @@ def test_summary_endpoint_from_folder(summary_export_dir: Path) -> None:
     payload = response.json()
     assert payload["zip_count"] == 0
     assert payload["folder_count"] == 1
+    assert payload["source_item_count"] == 2
     assert payload["metadata_records"] == 4
     assert payload["total_media"] == 4
     assert payload["image_count"] == 2
@@ -164,6 +165,7 @@ def test_summary_endpoint_from_zip(summary_export_zip: Path) -> None:
     payload = response.json()
     assert payload["zip_count"] == 1
     assert payload["folder_count"] == 0
+    assert payload["source_item_count"] == 2
     assert payload["metadata_records"] == 4
     assert payload["total_media"] == 4
     assert payload["image_count"] == 2

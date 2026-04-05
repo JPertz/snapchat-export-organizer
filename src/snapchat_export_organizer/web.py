@@ -155,6 +155,7 @@ class SummaryRequest(BaseModel):
 class MediaSummaryResponse(BaseModel):
     zip_count: int
     folder_count: int
+    source_item_count: int
     metadata_records: int
     total_media: int
     image_count: int
@@ -366,6 +367,7 @@ def _serialize_summary(summary: MediaSummary) -> MediaSummaryResponse:
     return MediaSummaryResponse(
         zip_count=summary.zip_count,
         folder_count=summary.folder_count,
+        source_item_count=summary.source_item_count,
         metadata_records=summary.metadata_records,
         total_media=summary.total_media,
         image_count=summary.image_count,

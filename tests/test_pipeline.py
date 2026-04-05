@@ -169,6 +169,7 @@ def test_analyze_sources_from_folder(summary_export_dir: Path) -> None:
 
     assert summary.zip_count == 0
     assert summary.folder_count == 1
+    assert summary.source_item_count == 2
     assert summary.metadata_records == 4
     assert summary.total_media == 4
     assert summary.image_count == 2
@@ -188,6 +189,7 @@ def test_analyze_sources_from_zip(summary_export_zip: Path) -> None:
 
     assert summary.zip_count == 1
     assert summary.folder_count == 0
+    assert summary.source_item_count == 2
     assert summary.metadata_records == 4
     assert summary.total_media == 4
     assert summary.image_count == 2
@@ -207,6 +209,7 @@ def test_analyze_sources_ready_from_folder(sample_export_dir: Path) -> None:
 
     assert summary.zip_count == 0
     assert summary.folder_count == 1
+    assert summary.source_item_count == 3
     assert summary.metadata_records == 1
     assert summary.total_media == 1
     assert summary.image_count == 1
@@ -226,6 +229,7 @@ def test_analyze_sources_detects_missing_and_orphan_files(reconciliation_issue_e
 
     assert summary.zip_count == 0
     assert summary.folder_count == 1
+    assert summary.source_item_count == 3
     assert summary.metadata_records == 2
     assert summary.total_media == 2
     assert summary.image_count == 2
@@ -271,6 +275,7 @@ def test_analyze_sources_matches_json_from_one_zip_to_media_in_other_folder(tmp_
 
     assert summary.zip_count == 1
     assert summary.folder_count == 1
+    assert summary.source_item_count == 2
     assert summary.metadata_records == 1
     assert summary.total_media == 1
     assert summary.image_count == 1
@@ -318,6 +323,7 @@ def test_analyze_sources_extracts_mid_from_snapchat_query_parameter(tmp_path: Pa
     summary = analyze_sources([export_dir])
 
     assert summary.metadata_records == 1
+    assert summary.source_item_count == 2
     assert summary.total_media == 1
     assert summary.image_count == 0
     assert summary.video_count == 1
