@@ -37,6 +37,56 @@ That gives us two good paths:
 4. Start processing.
 5. Receive one folder that fills up with finished JPG and MP4 files while processing runs.
 
+## Quick Start On A Windows Laptop
+
+If you just want to test the app locally on your laptop, use this:
+
+### First start
+
+Run these commands once in the project folder:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
+cd webui
+npm install
+npm run build
+cd ..
+python -m snapchat_export_organizer.app
+```
+
+What happens next:
+
+- the local server starts automatically
+- your browser opens automatically
+- you can add Snapchat ZIPs or export folders and choose an output folder
+
+### Every later start
+
+After the first setup, this is enough:
+
+```powershell
+.venv\Scripts\Activate.ps1
+python -m snapchat_export_organizer.app
+```
+
+### If PowerShell blocks the venv activation
+
+Run this once in the same PowerShell window:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+```
+
+Then run:
+
+```powershell
+.venv\Scripts\Activate.ps1
+python -m snapchat_export_organizer.app
+```
+
 ## Current Project Layout
 
 ```text
