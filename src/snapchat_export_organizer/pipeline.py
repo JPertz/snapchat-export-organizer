@@ -460,35 +460,91 @@ def _parse_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
 
-    known_formats = [
+    # Naive formats — all assumed to be UTC
+    naive_formats = [
         "%Y-%m-%d %H:%M:%S UTC",
         "%Y-%m-%d %H:%M:%S %Z",
         "%Y-%m-%dT%H:%M:%S.%fZ",
         "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d",
     ]
-
-    for fmt in known_formats:
+    for fmt in naive_formats:
         try:
-            parsed = datetime.strptime(value, fmt)
-            return parsed.replace(tzinfo=timezone.utc)
+            return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
         except ValueError:
             continue
+
+    # Formats with an explicit UTC offset — convert to UTC properly
+    aware_formats = [
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%d %H:%M:%S%z",
+    ]
+    for fmt in aware_formats:
+        try:
+            return datetime.strptime(value, fmt).astimezone(timezone.utc)
+        except ValueError:
+            continue
+
+    # fromisoformat fallback for other ISO 8601 variants (e.g. "2024-01-02T03:04:05+02:00")
+    try:
+        normalized = value.strip()
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, AttributeError):
+        pass
 
     return None
 
 
 def _extract_lat_lon(record: dict[str, object]) -> tuple[float | None, float | None]:
-    for lat_key, lon_key in (("Latitude", "Longitude"), ("Lat", "Lng")):
+    for lat_key, lon_key in (
+        ("Latitude", "Longitude"),
+        ("Lat", "Lng"),
+        ("lat", "lon"),
+        ("lat", "lng"),
+        ("latitude", "longitude"),
+    ):
         raw_lat = record.get(lat_key)
         raw_lon = record.get(lon_key)
         if isinstance(raw_lat, (float, int)) and isinstance(raw_lon, (float, int)):
             return float(raw_lat), float(raw_lon)
+        if isinstance(raw_lat, str) and isinstance(raw_lon, str):
+            try:
+                return float(raw_lat.strip()), float(raw_lon.strip())
+            except ValueError:
+                pass
 
     location = _coerce_text(record.get("Location"))
     if location:
+        # Decimal: "52.52, 13.405" or "Latitude, Longitude: 52.52, 13.405"
         match = re.search(r"(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)", location)
         if match:
             return float(match.group(1)), float(match.group(2))
+
+        # DMS: "52° 31' 12.00" N, 13° 24' 15.00" E"
+        dms = re.search(
+            r'(\d+)°\s*(\d+)[\'′]\s*(\d+(?:\.\d+)?)[\"″]?\s*([NS])'
+            r'\D+'
+            r'(\d+)°\s*(\d+)[\'′]\s*(\d+(?:\.\d+)?)[\"″]?\s*([EW])',
+            location,
+            re.IGNORECASE,
+        )
+        if dms:
+            lat = int(dms.group(1)) + int(dms.group(2)) / 60 + float(dms.group(3)) / 3600
+            lon = int(dms.group(5)) + int(dms.group(6)) / 60 + float(dms.group(7)) / 3600
+            if dms.group(4).upper() == "S":
+                lat = -lat
+            if dms.group(8).upper() == "W":
+                lon = -lon
+            return lat, lon
 
     return None, None
 

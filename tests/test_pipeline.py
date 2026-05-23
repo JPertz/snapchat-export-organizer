@@ -483,3 +483,89 @@ def test_analyze_sources_extracts_mid_from_snapchat_query_parameter(tmp_path: Pa
     assert summary.missing_media_files == 0
     assert summary.orphan_media_files == 0
     assert summary.scan_ready is True
+
+
+def test_process_video_sources_without_overlay(sample_video_no_overlay_export_dir: Path, tmp_path: Path) -> None:
+    output_dir = tmp_path / "output-video-no-overlay"
+
+    stats = process_sources([sample_video_no_overlay_export_dir], output_dir)
+
+    assert stats.discovered_metadata == 1
+    assert stats.discovered_media == 1
+    assert stats.merged_files == 1
+    assert stats.tagged_files == 1
+    assert stats.skipped_files == 0
+    assert stats.errors == []
+
+    tagged_files = list(output_dir.glob("*.mp4"))
+    assert len(tagged_files) == 1
+
+    metadata_dump = _dump_video_metadata(tagged_files[0])
+    assert "creation_time" in metadata_dump
+    assert "2024-04-05T06:07:08" in metadata_dump
+    assert list(output_dir.glob("*.seo-stage.mp4")) == []
+
+
+def test_parse_datetime_handles_no_timezone() -> None:
+    result = pipeline._parse_datetime("2024-01-02 03:04:05")
+    assert result is not None
+    assert result.year == 2024
+    assert result.month == 1
+    assert result.day == 2
+    assert result.hour == 3
+    assert result.tzinfo is not None
+
+
+def test_parse_datetime_handles_date_only() -> None:
+    result = pipeline._parse_datetime("2024-06-15")
+    assert result is not None
+    assert result.year == 2024
+    assert result.month == 6
+    assert result.day == 15
+    assert result.tzinfo is not None
+
+
+def test_parse_datetime_handles_iso_with_utc_offset() -> None:
+    result = pipeline._parse_datetime("2024-01-02T05:04:05+02:00")
+    assert result is not None
+    assert result.hour == 3
+    assert result.tzinfo is not None
+
+
+def test_parse_datetime_handles_iso_with_milliseconds_and_offset() -> None:
+    result = pipeline._parse_datetime("2024-01-02T03:04:05.123+00:00")
+    assert result is not None
+    assert result.hour == 3
+    assert result.minute == 4
+
+
+def test_parse_datetime_returns_none_for_garbage() -> None:
+    assert pipeline._parse_datetime("not-a-date") is None
+    assert pipeline._parse_datetime("") is None
+    assert pipeline._parse_datetime(None) is None
+
+
+def test_extract_lat_lon_handles_string_values() -> None:
+    result = pipeline._extract_lat_lon({"Latitude": "52.52", "Longitude": "13.405"})
+    assert result == (52.52, 13.405)
+
+
+def test_extract_lat_lon_handles_lowercase_keys() -> None:
+    result = pipeline._extract_lat_lon({"lat": 48.8566, "lon": 2.3522})
+    assert result == (48.8566, 2.3522)
+
+
+def test_extract_lat_lon_handles_dms_format() -> None:
+    result = pipeline._extract_lat_lon({"Location": '52° 31\' 12" N, 13° 24\' 18" E'})
+    assert result is not None
+    lat, lon = result
+    assert abs(lat - 52.52) < 0.01
+    assert abs(lon - 13.405) < 0.01
+
+
+def test_extract_lat_lon_handles_dms_south_west() -> None:
+    result = pipeline._extract_lat_lon({"Location": '33° 51\' 54" S, 151° 12\' 36" W'})
+    assert result is not None
+    lat, lon = result
+    assert lat < 0
+    assert lon < 0

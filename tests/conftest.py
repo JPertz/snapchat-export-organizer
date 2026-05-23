@@ -124,6 +124,32 @@ def _write_video_export_fixture(root: Path) -> Path:
     return export_dir
 
 
+def _write_video_no_overlay_export_fixture(root: Path) -> Path:
+    export_dir = root / "sample_video_no_overlay_export"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    _run_ffmpeg(
+        [
+            "-y", "-f", "lavfi", "-i", "color=c=blue:s=20x20:d=1:r=1",
+            "-pix_fmt", "yuv420p",
+            str(export_dir / f"{VIDEO_TWO_MID}-main.mp4"),
+        ]
+    )
+
+    payload = [
+        {
+            "Date": "2024-04-05 06:07:08 UTC",
+            "Media Id": VIDEO_TWO_MID,
+            "Media Download Url": f"https://example.com/{VIDEO_TWO_MID}.mp4",
+            "Media Type": "Video",
+            "Latitude": 48.8566,
+            "Longitude": 2.3522,
+        }
+    ]
+    (export_dir / "metadata.json").write_text(json.dumps(payload), encoding="utf-8")
+    return export_dir
+
+
 def _write_progress_export_fixture(root: Path) -> Path:
     export_dir = root / "progress_export"
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -232,6 +258,11 @@ def sample_video_export_zip(tmp_path: Path) -> Path:
         for file_path in export_dir.rglob("*"):
             archive.write(file_path, arcname=file_path.relative_to(export_dir))
     return zip_path
+
+
+@pytest.fixture()
+def sample_video_no_overlay_export_dir(tmp_path: Path) -> Path:
+    return _write_video_no_overlay_export_fixture(tmp_path)
 
 
 @pytest.fixture()
